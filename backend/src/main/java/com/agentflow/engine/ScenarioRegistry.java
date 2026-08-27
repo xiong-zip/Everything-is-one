@@ -31,7 +31,7 @@ public class ScenarioRegistry {
         return scenarios;
     }
 
-    public Scenario find(String command) {
+    public Scenario tryFind(String command) {
         String c = command.trim();
         for (Scenario s : scenarios) {
             if (s.command().equals(c)) {
@@ -48,7 +48,16 @@ public class ScenarioRegistry {
                 }
             }
         }
+        return null;
+    }
+
+    public Scenario fallback() {
         return scenarios.get(0);
+    }
+
+    public Scenario find(String command) {
+        Scenario s = tryFind(command);
+        return s == null ? fallback() : s;
     }
 
     private static Scenario weatherScenario() {

@@ -4,6 +4,11 @@ import com.agentflow.llm.LlmClient;
 import com.agentflow.model.AgentStep;
 import com.agentflow.model.FinalData;
 import com.agentflow.model.Scenario;
+import com.agentflow.model.ToolCall;
+import com.agentflow.tool.ToolRegistry;
+import com.agentflow.tool.ToolResult;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -11,6 +16,7 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -38,13 +44,27 @@ public class AgentEngine {
             "你是 AgentFlow 智能体，负责把各子任务的执行结果汇总成最终交付物。" +
             "请按以下格式输出：第一行是一句话总结（30 字以内），空一行后输出完整成品。";
 
+    private static final String PLAN_SYSTEM =
+            "你是 AgentFlow 的任务规划器。请把用户指令拆解成 2~4 个有序、可执行的子任务。\n" +
+            "每个子任务必须是 JSON 对象，字段：\n" +
+            "- \"kind\": \"tool\" | \"think\" | \"write\"（tool=调用工具取数，think=分析推理，write=生成最终内容）\n" +
+            "- \"tag\": 简短类型标签（如 工具调用、智能分析、内容生成）\n" +
+            "- \"title\": 一句话描述该子任务\n" +
+            "- \"tool\": 仅当 kind 为 tool 时给出 {\"name\": 工具名, \"args\": \"参数说明\"}，否则为 null\n" +
+            "可用工具：weather.query（查天气）、stock.query（查股价行情）、transit.query（查交通方式）、" +
+            "poi.recommend（推荐当地美食）、llm.generate（AI 生成内容）\n" +
+            "请只输出一个 JSON 数组，不要输出任何多余文字、解释或代码块。";
+
     private final ScenarioRegistry registry;
+    private final ToolRegistry toolRegistry;
     private final LlmClient llmClient;
+    private final ObjectMapper mapper = new ObjectMapper();
     private final ExecutorService executor = Executors.newCachedThreadPool();
     private final ConcurrentHashMap<String, String> tasks = new ConcurrentHashMap<>();
 
-    public AgentEngine(ScenarioRegistry registry, LlmClient llmClient) {
+    public AgentEngine(ScenarioRegistry registry, ToolRegistry toolRegistry, LlmClient llmClient) {
         this.registry = registry;
+        this.toolRegistry = toolRegistry;
         this.llmClient = llmClient;
     }
 
@@ -67,7 +87,7 @@ public class AgentEngine {
 
     private void orchestrate(SseEmitter emitter, String command) {
         try {
-            Scenario scenario = registry.find(command);
+            Scenario scenario = resolveScenario(command);
             List<AgentStep> steps = scenario.steps();
             int total = steps.size();
 
@@ -92,8 +112,9 @@ public class AgentEngine {
 
             /* 阶段三：逐步执行 */
             send(emitter, "phase", map("name", "execute", "state", "active"));
+            Map<String, String> toolResults = new LinkedHashMap<>();
             for (int i = 0; i < steps.size(); i++) {
-                executeStep(emitter, scenario, command, steps.get(i), i);
+                executeStep(emitter, command, steps.get(i), i, toolResults);
             }
             send(emitter, "phase", map("name", "execute", "state", "done"));
 
@@ -105,7 +126,7 @@ public class AgentEngine {
             FinalData f = scenario.finalData();
             if (llmClient.isEnabled()) {
                 try {
-                    String content = llmClient.chat(FINAL_SYSTEM, buildFinalPrompt(scenario, command));
+                    String content = llmClient.chat(FINAL_SYSTEM, buildFinalPrompt(command, toolResults));
                     f = parseFinal(content, f);
                 } catch (Exception ex) {
                     log.warn("LLM 汇总失败，使用模拟数据: {}", ex.getMessage());
@@ -130,13 +151,39 @@ public class AgentEngine {
         }
     }
 
-    private void executeStep(SseEmitter emitter, Scenario scenario, String userCommand, AgentStep s, int index) throws IOException {
+    private void executeStep(SseEmitter emitter, String userCommand, AgentStep s, int index,
+                             Map<String, String> toolResults) throws IOException {
         send(emitter, "step-state", map("index", index, "state", "running"));
         send(emitter, "status", map("text", "正在执行 · " + s.getTitle(), "cls", "is-running"));
 
         if (s.getTool() != null) {
             send(emitter, "tool", map("index", index, "name", s.getTool().name(), "args", s.getTool().args()));
             sleep(420);
+
+            ToolResult tr = null;
+            try {
+                tr = toolRegistry.execute(s.getTool().name(), userCommand);
+            } catch (Exception ex) {
+                log.warn("工具 {} 执行失败，使用模拟数据: {}", s.getTool().name(), ex.getMessage());
+            }
+
+            Map<String, Object> result = s.getResult() == null ? Map.of() : s.getResult();
+            List<String> list = s.getList();
+            String resultType = s.getResultType();
+            String summary = "（模拟数据）";
+            if (tr != null) {
+                result = tr.result() == null ? Map.of() : tr.result();
+                list = tr.list();
+                resultType = tr.resultType();
+                summary = tr.summary() == null ? "" : tr.summary();
+            }
+            toolResults.put(s.getTool().name(), summary);
+
+            sleep(Math.max(180, s.getDur() - 420));
+            send(emitter, "result", map("index", index, "resultType", resultType, "result", result, "list", list));
+            sleep(300);
+            send(emitter, "step-state", map("index", index, "state", "done"));
+            return;
         }
 
         if (s.getLines() != null) {
@@ -144,7 +191,7 @@ public class AgentEngine {
             List<String> lines = s.getLines();
             if (llmClient.isEnabled()) {
                 try {
-                    String reasoning = llmClient.reason(THINK_SYSTEM, buildThinkPrompt(scenario, s, userCommand));
+                    String reasoning = llmClient.reason(THINK_SYSTEM, buildThinkPrompt(s, userCommand, toolResults));
                     List<String> generated = splitLines(reasoning);
                     if (!generated.isEmpty()) {
                         lines = generated;
@@ -166,7 +213,7 @@ public class AgentEngine {
             Map<String, Object> result = s.getResult();
             if (llmClient.isEnabled()) {
                 try {
-                    String content = llmClient.chat(WRITE_SYSTEM, buildWritePrompt(scenario, userCommand));
+                    String content = llmClient.chat(WRITE_SYSTEM, buildWritePrompt(userCommand, toolResults));
                     result = map("versions", List.of(map("tag", "AI 生成", "text", content)));
                 } catch (Exception ex) {
                     log.warn("LLM 生成失败，使用模拟数据: {}", ex.getMessage());
@@ -179,7 +226,7 @@ public class AgentEngine {
             return;
         }
 
-        /* 工具结果：模拟数据 */
+        /* 其余步骤：通用占位结果 */
         sleep(Math.max(180, s.getDur() - 350));
         send(emitter, "result", map(
                 "index", index,
@@ -190,34 +237,96 @@ public class AgentEngine {
         send(emitter, "step-state", map("index", index, "state", "done"));
     }
 
-    /* ---------- LLM Prompt 构造 ---------- */
-
-    private String toolSummary(Scenario scenario) {
-        StringBuilder sb = new StringBuilder();
-        for (AgentStep s : scenario.steps()) {
-            if (s.getTool() != null && s.getResult() != null) {
-                sb.append("- ").append(s.getTool().name()).append(" → ").append(s.getResult()).append("\n");
+    private Scenario resolveScenario(String command) {
+        Scenario scenario = registry.tryFind(command);
+        if (scenario != null) {
+            return scenario;
+        }
+        if (llmClient.isEnabled()) {
+            try {
+                return buildDynamicScenario(command);
+            } catch (Exception ex) {
+                log.warn("LLM 动态规划失败，回退默认场景: {}", ex.getMessage());
             }
         }
-        return sb.length() == 0 ? "（无工具结果）" : sb.toString();
+        return registry.fallback();
     }
 
-    private String buildThinkPrompt(Scenario scenario, AgentStep step, String userCommand) {
+    private Scenario buildDynamicScenario(String command) {
+        String content = llmClient.chat(PLAN_SYSTEM, "用户指令：" + command);
+        List<AgentStep> steps = parsePlan(content);
+        if (steps.isEmpty()) {
+            throw new IllegalStateException("未解析到有效计划");
+        }
+        FinalData finalData = new FinalData(
+                "已完成 " + steps.size() + " 个子任务：LLM 动态规划 → 逐步执行 → AI 汇总。",
+                "",
+                List.of("LLM 动态规划", "真实工具调用", "AI 汇总"));
+        return new Scenario("dynamic", command, "动态任务", steps, finalData);
+    }
+
+    private List<AgentStep> parsePlan(String content) {
+        List<AgentStep> steps = new ArrayList<>();
+        try {
+            int start = content.indexOf('[');
+            int end = content.lastIndexOf(']');
+            if (start < 0 || end <= start) {
+                return steps;
+            }
+            JsonNode arr = mapper.readTree(content.substring(start, end + 1));
+            if (!arr.isArray()) {
+                return steps;
+            }
+            for (JsonNode n : arr) {
+                String kind = n.path("kind").asText("tool");
+                String tag = n.path("tag").asText(kind);
+                String title = n.path("title").asText("子任务");
+                ToolCall tool = null;
+                JsonNode t = n.get("tool");
+                if (t != null && t.isObject()) {
+                    String name = t.path("name").asText("");
+                    if (!name.isBlank()) {
+                        tool = new ToolCall(name, t.path("args").asText(""));
+                    }
+                }
+                List<String> lines = "think".equals(kind) ? List.of() : null;
+                steps.add(new AgentStep(kind, tag, title, tool, lines, null, null, null, 1300));
+            }
+        } catch (Exception ex) {
+            log.warn("解析动态计划失败: {}", ex.getMessage());
+        }
+        return steps;
+    }
+
+    /* ---------- LLM Prompt 构造 ---------- */
+
+    private String toolSummary(Map<String, String> toolResults) {
+        if (toolResults == null || toolResults.isEmpty()) {
+            return "（无工具结果）";
+        }
+        StringBuilder sb = new StringBuilder();
+        for (Map.Entry<String, String> e : toolResults.entrySet()) {
+            sb.append("- ").append(e.getKey()).append(" → ").append(e.getValue()).append("\n");
+        }
+        return sb.toString();
+    }
+
+    private String buildThinkPrompt(AgentStep step, String userCommand, Map<String, String> toolResults) {
         return "用户指令：" + userCommand + "\n"
                 + "当前子任务：" + step.getTitle() + "\n"
-                + "已获得的工具结果：\n" + toolSummary(scenario)
+                + "已获得的工具结果：\n" + toolSummary(toolResults)
                 + "\n请输出推理过程。";
     }
 
-    private String buildWritePrompt(Scenario scenario, String userCommand) {
+    private String buildWritePrompt(String userCommand, Map<String, String> toolResults) {
         return "用户指令：" + userCommand + "\n"
-                + "已获得的工具结果：\n" + toolSummary(scenario)
+                + "已获得的工具结果：\n" + toolSummary(toolResults)
                 + "\n请生成最终成品内容。";
     }
 
-    private String buildFinalPrompt(Scenario scenario, String userCommand) {
+    private String buildFinalPrompt(String userCommand, Map<String, String> toolResults) {
         return "用户指令：" + userCommand + "\n"
-                + "各子任务执行结果：\n" + toolSummary(scenario)
+                + "各子任务执行结果：\n" + toolSummary(toolResults)
                 + "\n请按格式汇总输出。";
     }
 
