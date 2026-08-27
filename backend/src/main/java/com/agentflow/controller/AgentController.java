@@ -2,6 +2,7 @@ package com.agentflow.controller;
 
 import com.agentflow.engine.AgentEngine;
 import com.agentflow.engine.ScenarioRegistry;
+import com.agentflow.llm.LlmClient;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -20,10 +21,12 @@ public class AgentController {
 
     private final AgentEngine engine;
     private final ScenarioRegistry registry;
+    private final LlmClient llmClient;
 
-    public AgentController(AgentEngine engine, ScenarioRegistry registry) {
+    public AgentController(AgentEngine engine, ScenarioRegistry registry, LlmClient llmClient) {
         this.engine = engine;
         this.registry = registry;
+        this.llmClient = llmClient;
     }
 
     @GetMapping(value = "/run", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
@@ -39,6 +42,14 @@ public class AgentController {
         return registry.all().stream()
                 .map(s -> Map.of("command", s.command(), "short", s.shortName()))
                 .toList();
+    }
+
+    @GetMapping("/info")
+    public Map<String, Object> info() {
+        return Map.of(
+                "llmEnabled", llmClient.isEnabled(),
+                "model", llmClient.getModel(),
+                "baseUrl", llmClient.getBaseUrl());
     }
 
     @ExceptionHandler(IllegalArgumentException.class)

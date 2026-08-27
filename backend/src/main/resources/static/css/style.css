@@ -243,6 +243,14 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 .console-status.is-running { color: var(--amber); }
 .console-status.is-done { color: var(--teal); }
 
+.llm-badge {
+  font-family: var(--font-mono); font-size: 11px; color: var(--text-3);
+  border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px;
+  background: rgba(244, 238, 226, 0.04); white-space: nowrap;
+}
+.llm-badge.on { color: var(--teal); border-color: rgba(83, 211, 189, 0.3); background: var(--teal-soft); }
+.llm-badge.off { color: var(--amber); border-color: var(--amber-line); background: var(--amber-soft); }
+
 .console-body { padding: 22px; }
 
 /* Composer */
@@ -584,6 +592,7 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
   .run-btn { width: 100%; }
   .weather-detail { margin-left: 0; }
   .step { grid-template-columns: 36px 1fr; }
+  .llm-badge { display: none; }
 }
 @media (max-width: 520px) {
   .hero-stats { gap: 18px; }

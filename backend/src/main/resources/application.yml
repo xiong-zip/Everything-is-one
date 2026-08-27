@@ -5,6 +5,15 @@ spring:
   application:
     name: agentflow
 
+agentflow:
+  llm:
+    base-url: https://api.deepseek.com
+    api-key: ${DEEPSEEK_API_KEY:}
+    model: deepseek-v4-flash
+    proxy:
+      host: ${LLM_PROXY_HOST:}
+      port: ${LLM_PROXY_PORT:0}
+
 logging:
   level:
     root: info

@@ -358,6 +358,26 @@ const io = new IntersectionObserver(
 );
 document.querySelectorAll(".reveal").forEach((el) => io.observe(el));
 
+/* ---------- LLM 接入状态 ---------- */
+async function renderInfo() {
+  const badge = $("#llmBadge");
+  try {
+    const res = await fetch(`${API_BASE}/info`);
+    if (!res.ok) throw new Error("backend unavailable");
+    const info = await res.json();
+    if (info.llmEnabled) {
+      badge.textContent = `● ${info.model} 已接入`;
+      badge.classList.add("on");
+    } else {
+      badge.textContent = "● 模拟模式 · 未配置 API Key";
+      badge.classList.add("off");
+    }
+  } catch (e) {
+    badge.textContent = "● 后端不可用";
+  }
+}
+
 /* ---------- 初始化 ---------- */
+renderInfo();
 renderChips();
 setStatus("待命", "");
