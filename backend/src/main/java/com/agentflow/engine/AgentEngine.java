@@ -93,7 +93,7 @@ public class AgentEngine {
             /* 阶段三：逐步执行 */
             send(emitter, "phase", map("name", "execute", "state", "active"));
             for (int i = 0; i < steps.size(); i++) {
-                executeStep(emitter, scenario, steps.get(i), i);
+                executeStep(emitter, scenario, command, steps.get(i), i);
             }
             send(emitter, "phase", map("name", "execute", "state", "done"));
 
@@ -105,7 +105,7 @@ public class AgentEngine {
             FinalData f = scenario.finalData();
             if (llmClient.isEnabled()) {
                 try {
-                    String content = llmClient.chat(FINAL_SYSTEM, buildFinalPrompt(scenario));
+                    String content = llmClient.chat(FINAL_SYSTEM, buildFinalPrompt(scenario, command));
                     f = parseFinal(content, f);
                 } catch (Exception ex) {
                     log.warn("LLM 汇总失败，使用模拟数据: {}", ex.getMessage());
@@ -130,7 +130,7 @@ public class AgentEngine {
         }
     }
 
-    private void executeStep(SseEmitter emitter, Scenario scenario, AgentStep s, int index) throws IOException {
+    private void executeStep(SseEmitter emitter, Scenario scenario, String userCommand, AgentStep s, int index) throws IOException {
         send(emitter, "step-state", map("index", index, "state", "running"));
         send(emitter, "status", map("text", "正在执行 · " + s.getTitle(), "cls", "is-running"));
 
@@ -144,7 +144,7 @@ public class AgentEngine {
             List<String> lines = s.getLines();
             if (llmClient.isEnabled()) {
                 try {
-                    String reasoning = llmClient.reason(THINK_SYSTEM, buildThinkPrompt(scenario, s));
+                    String reasoning = llmClient.reason(THINK_SYSTEM, buildThinkPrompt(scenario, s, userCommand));
                     List<String> generated = splitLines(reasoning);
                     if (!generated.isEmpty()) {
                         lines = generated;
@@ -166,7 +166,7 @@ public class AgentEngine {
             Map<String, Object> result = s.getResult();
             if (llmClient.isEnabled()) {
                 try {
-                    String content = llmClient.chat(WRITE_SYSTEM, buildWritePrompt(scenario));
+                    String content = llmClient.chat(WRITE_SYSTEM, buildWritePrompt(scenario, userCommand));
                     result = map("versions", List.of(map("tag", "AI 生成", "text", content)));
                 } catch (Exception ex) {
                     log.warn("LLM 生成失败，使用模拟数据: {}", ex.getMessage());
@@ -202,21 +202,21 @@ public class AgentEngine {
         return sb.length() == 0 ? "（无工具结果）" : sb.toString();
     }
 
-    private String buildThinkPrompt(Scenario scenario, AgentStep step) {
-        return "用户指令：" + scenario.command() + "\n"
+    private String buildThinkPrompt(Scenario scenario, AgentStep step, String userCommand) {
+        return "用户指令：" + userCommand + "\n"
                 + "当前子任务：" + step.getTitle() + "\n"
                 + "已获得的工具结果：\n" + toolSummary(scenario)
                 + "\n请输出推理过程。";
     }
 
-    private String buildWritePrompt(Scenario scenario) {
-        return "用户指令：" + scenario.command() + "\n"
+    private String buildWritePrompt(Scenario scenario, String userCommand) {
+        return "用户指令：" + userCommand + "\n"
                 + "已获得的工具结果：\n" + toolSummary(scenario)
                 + "\n请生成最终成品内容。";
     }
 
-    private String buildFinalPrompt(Scenario scenario) {
-        return "用户指令：" + scenario.command() + "\n"
+    private String buildFinalPrompt(Scenario scenario, String userCommand) {
+        return "用户指令：" + userCommand + "\n"
                 + "各子任务执行结果：\n" + toolSummary(scenario)
                 + "\n请按格式汇总输出。";
     }
