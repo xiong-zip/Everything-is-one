@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>AgentFlow · AI 任务助手</title>
+<meta name="description" content="AgentFlow —— 简易 AI Agent 任务助手。输入一句复合指令，AI 自动拆解成多个子任务，规划顺序、调用工具、逐步执行并汇总输出。基于 LangChain4j / Spring AI 的 Agent 编排理念。" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@600;700;900&family=Noto+Sans+SC:wght@400;500;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+
+<div class="bg-decor" aria-hidden="true">
+  <div class="bg-grid"></div>
+  <div class="bg-glow glow-a"></div>
+  <div class="bg-glow glow-b"></div>
+</div>
+
+<header class="nav" id="nav">
+  <div class="container nav-inner">
+    <a class="brand" href="#top" aria-label="AgentFlow 首页">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 32 32" width="26" height="26" fill="none">
+          <circle cx="16" cy="16" r="6.5" stroke="currentColor" stroke-width="2"/>
+          <circle cx="16" cy="16" r="2" fill="currentColor"/>
+          <path d="M16 2.5v5M16 24.5v5M2.5 16h5M24.5 16h5M6.4 6.4l3.5 3.5M22.1 22.1l3.5 3.5M25.6 6.4l-3.5 3.5M9.9 22.1l-3.5 3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+      </span>
+      <span class="brand-name">AgentFlow</span>
+      <span class="brand-sub">AI 任务助手</span>
+    </a>
+    <nav class="nav-links" aria-label="主导航">
+      <a href="#playground">任务工作台</a>
+      <a href="#how">工作原理</a>
+      <a href="#stack">技术亮点</a>
+    </nav>
+    <a class="btn btn-ghost nav-cta" href="#playground">开始体验 <span aria-hidden="true">→</span></a>
+  </div>
+</header>
+
+<main id="top">
+
+  <!-- ============ HERO ============ -->
+  <section class="hero">
+    <div class="container hero-inner">
+      <p class="eyebrow reveal">Agent 智能体 · 多任务自动编排</p>
+      <h1 class="hero-title reveal">
+        一句复合指令，<br />
+        <span class="hero-accent">AI 分步替你完成</span>
+      </h1>
+      <p class="hero-sub reveal">
+        「帮我查厦门今天天气，然后生成一段朋友圈文案」—— Agent 自动把它拆解成多个子任务：规划执行顺序、调用工具、逐步完成，最后汇总成你想要的成品。
+      </p>
+      <div class="hero-actions reveal">
+        <a class="btn btn-primary" href="#playground">
+          <span>立即体验</span>
+          <span class="btn-arrow" aria-hidden="true">↓</span>
+        </a>
+        <a class="btn btn-ghost" href="#how">了解工作原理</a>
+      </div>
+      <dl class="hero-stats reveal">
+        <div class="stat">
+          <dt class="stat-num">1 <span>句</span></dt>
+          <dd class="stat-label">复合指令</dd>
+        </div>
+        <div class="stat-sep" aria-hidden="true"></div>
+        <div class="stat">
+          <dt class="stat-num">3+ <span>个</span></dt>
+          <dd class="stat-label">自动拆解的子任务</dd>
+        </div>
+        <div class="stat-sep" aria-hidden="true"></div>
+        <div class="stat">
+          <dt class="stat-num">0 <span>次</span></dt>
+          <dd class="stat-label">人工干预</dd>
+        </div>
+      </dl>
+    </div>
+  </section>
+
+  <!-- ============ PLAYGROUND ============ -->
+  <section class="playground container" id="playground">
+    <div class="section-head reveal">
+      <span class="section-index" aria-hidden="true">01</span>
+      <div>
+        <h2>任务工作台</h2>
+        <p>输入一句复合指令，观看 Agent 自动拆解、规划并逐步执行。下方为演示数据。</p>
+      </div>
+    </div>
+
+    <div class="console reveal" role="region" aria-label="Agent 执行控制台">
+      <div class="console-bar">
+        <div class="dot-group" aria-hidden="true"><span></span><span></span><span></span></div>
+        <span class="console-title">agent-runner · demo</span>
+        <span class="console-status" id="consoleStatus" role="status" aria-live="polite">● 待命</span>
+      </div>
+
+      <div class="console-body">
+        <!-- 输入区 -->
+        <div class="composer" id="composer">
+          <label class="sr-only" for="commandInput">输入复合指令</label>
+          <textarea id="commandInput" rows="3"
+            placeholder="例如：帮我查厦门今天天气，然后生成一段朋友圈文案">帮我查厦门今天天气，然后生成一段朋友圈文案</textarea>
+          <div class="composer-meta">
+            <div class="example-chips" id="exampleChips" role="list" aria-label="示例指令">
+              <span class="chip-label">试试：</span>
+            </div>
+            <button class="btn btn-primary run-btn" id="runBtn" type="button">
+              <span class="run-ico" aria-hidden="true"></span>开始执行
+            </button>
+          </div>
+        </div>
+
+        <!-- 执行视图 -->
+        <div class="run-view" id="runView" hidden>
+          <div class="command-banner">
+            <span class="cb-ico" aria-hidden="true">›</span>
+            <span class="cb-text" id="commandBanner"></span>
+          </div>
+
+          <div class="phases" id="phases" aria-label="执行阶段">
+            <div class="phase" data-phase="understand"><span class="phase-dot" aria-hidden="true"></span><span class="phase-label">意图分析</span></div>
+            <div class="phase-arrow" aria-hidden="true">→</div>
+            <div class="phase" data-phase="plan"><span class="phase-dot" aria-hidden="true"></span><span class="phase-label">任务规划</span></div>
+            <div class="phase-arrow" aria-hidden="true">→</div>
+            <div class="phase" data-phase="execute"><span class="phase-dot" aria-hidden="true"></span><span class="phase-label">逐步执行</span></div>
+            <div class="phase-arrow" aria-hidden="true">→</div>
+            <div class="phase" data-phase="merge"><span class="phase-dot" aria-hidden="true"></span><span class="phase-label">结果汇总</span></div>
+          </div>
+
+          <ol class="timeline" id="timeline"></ol>
+
+          <div class="final-panel" id="finalPanel" hidden>
+            <div class="fp-head">
+              <span class="fp-ico" aria-hidden="true">◈</span>
+              <div>
+                <h4>任务汇总</h4>
+                <p id="finalSummary"></p>
+              </div>
+            </div>
+            <div class="fp-output" id="finalOutput"></div>
+            <div class="fp-meta" id="finalMeta"></div>
+            <div class="fp-actions">
+              <button class="btn btn-ghost" id="resetBtn" type="button">重新执行</button>
+              <button class="btn btn-ghost copy-btn" id="copyFinalBtn" type="button">
+                <span class="copy-label">复制结果</span><span class="copy-ok" hidden>✓ 已复制</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ HOW IT WORKS ============ -->
+  <section class="how container" id="how">
+    <div class="section-head reveal">
+      <span class="section-index" aria-hidden="true">02</span>
+      <div>
+        <h2>工作原理</h2>
+        <p>遵循 Agent 的经典编排范式：理解意图 → 拆解规划 → 工具调用 → 汇总输出。</p>
+      </div>
+    </div>
+
+    <div class="flow">
+      <div class="flow-card reveal" style="--i:0">
+        <span class="flow-num" aria-hidden="true">01</span>
+        <span class="flow-ico" aria-hidden="true">◎</span>
+        <h3>理解意图</h3>
+        <p>接收一句复合指令，用 LLM 解析真实意图与隐含约束：城市、日期、文案风格、输出对象。</p>
+        <code class="flow-code">analyze("查厦门天气，再写朋友圈文案")</code>
+      </div>
+      <div class="flow-card reveal" style="--i:1">
+        <span class="flow-num" aria-hidden="true">02</span>
+        <span class="flow-ico" aria-hidden="true">▦</span>
+        <h3>拆解规划</h3>
+        <p>把大目标拆成有依赖顺序的子任务，生成可执行的 Plan：查天气 → 提炼要点 → 生成文案。</p>
+        <code class="flow-code">plan() → [3 个子任务]</code>
+      </div>
+      <div class="flow-card reveal" style="--i:2">
+        <span class="flow-num" aria-hidden="true">03</span>
+        <span class="flow-ico" aria-hidden="true">⚙</span>
+        <h3>工具调用</h3>
+        <p>按需调用已注册的工具：天气查询、股票接口、LLM 生成等，形成「思考 → 行动 → 观察」的 ReAct 循环。</p>
+        <code class="flow-code">tool.weather.query({city})</code>
+      </div>
+      <div class="flow-card reveal" style="--i:3">
+        <span class="flow-num" aria-hidden="true">04</span>
+        <span class="flow-ico" aria-hidden="true">❖</span>
+        <h3>汇总输出</h3>
+        <p>收集所有子任务的结果，统一整理成最终答案，一步到位交付给用户。</p>
+        <code class="flow-code">aggregate() → 成品</code>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ TECH STACK ============ -->
+  <section class="stack container" id="stack">
+    <div class="section-head reveal">
+      <span class="section-index" aria-hidden="true">03</span>
+      <div>
+        <h2>技术亮点</h2>
+        <p>基于 Java 生态的 Agent 编排技术栈，简历亮点直接拉满。</p>
+      </div>
+    </div>
+
+    <div class="stack-grid">
+      <article class="stack-card reveal" style="--i:0">
+        <span class="stack-tag">Agent 编排框架</span>
+        <h3>LangChain4j / Spring AI</h3>
+        <p>统一管理 LLM 调用、ChatMemory 与工具注册，用 Java 优雅地编排多步骤 Agent 任务。</p>
+      </article>
+      <article class="stack-card reveal" style="--i:1">
+        <span class="stack-tag">推理模式</span>
+        <h3>ReAct 循环</h3>
+        <p>模型按「思考 → 行动 → 观察」自主决策下一步：该查天气就调工具，该写文案就调用生成。</p>
+      </article>
+      <article class="stack-card reveal" style="--i:2">
+        <span class="stack-tag">能力扩展</span>
+        <h3>Function Calling</h3>
+        <p>把业务能力（查天气、查股价、生成文案）注册为可被模型调用的函数，即插即用。</p>
+      </article>
+      <article class="stack-card reveal" style="--i:3">
+        <span class="stack-tag">实时体验</span>
+        <h3>流式输出</h3>
+        <p>SSE / WebFlux 将任务过程与日志流式返回，前端实时渲染执行进度，观感接近生产环境。</p>
+      </article>
+    </div>
+
+    <div class="arch reveal">
+      <div class="arch-title">整体架构示意</div>
+      <div class="arch-flow">
+        <div class="arch-node node-user">
+          <span class="arch-ico" aria-hidden="true">◉</span>
+          <div><strong>用户指令</strong><small>一句复合需求</small></div>
+        </div>
+        <div class="arch-line" aria-hidden="true"></div>
+        <div class="arch-node node-agent">
+          <span class="arch-ico" aria-hidden="true">◈</span>
+          <div><strong>Agent 编排层</strong><small>Planner · Memory · Loop</small></div>
+        </div>
+        <div class="arch-line" aria-hidden="true"></div>
+        <div class="arch-node node-tools">
+          <span class="arch-ico" aria-hidden="true">⚙</span>
+          <div><strong>工具层</strong><small>weather · stock · llm</small></div>
+        </div>
+        <div class="arch-line" aria-hidden="true"></div>
+        <div class="arch-node node-out">
+          <span class="arch-ico" aria-hidden="true">❖</span>
+          <div><strong>结果汇总</strong><small>成品交付</small></div>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="footer">
+  <div class="container footer-inner">
+    <span>AgentFlow · AI 任务助手 — 前端交互演示</span>
+    <span class="footer-note">Agent 编排理念参考 LangChain4j / Spring AI</span>
+  </div>
+</footer>
+
+<script src="js/app.js"></script>
+</body>
+</html>
