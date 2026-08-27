@@ -13,6 +13,8 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -39,13 +41,24 @@ public class AgentEngine {
     private final ScenarioRegistry registry;
     private final LlmClient llmClient;
     private final ExecutorService executor = Executors.newCachedThreadPool();
+    private final ConcurrentHashMap<String, String> tasks = new ConcurrentHashMap<>();
 
     public AgentEngine(ScenarioRegistry registry, LlmClient llmClient) {
         this.registry = registry;
         this.llmClient = llmClient;
     }
 
-    public SseEmitter run(String command) {
+    public String start(String command) {
+        String taskId = UUID.randomUUID().toString();
+        tasks.put(taskId, command);
+        return taskId;
+    }
+
+    public SseEmitter stream(String taskId) {
+        String command = tasks.remove(taskId);
+        if (command == null) {
+            return null;
+        }
         SseEmitter emitter = new SseEmitter(EMITTER_TIMEOUT_MS);
         emitter.onTimeout(emitter::complete);
         executor.submit(() -> orchestrate(emitter, command));

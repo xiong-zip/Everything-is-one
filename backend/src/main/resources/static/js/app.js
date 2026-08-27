@@ -29,7 +29,6 @@ const consoleStatus = $("#consoleStatus");
 
 let busy = false;
 let completed = false;
-let es = null;
 let steps = [];
 
 /* ---------- 工具函数 ---------- */
@@ -240,8 +239,8 @@ function endBusy() {
   runBtn.classList.remove("running");
 }
 
-/* ---------- Agent 主流程（SSE 接入后端） ---------- */
-function runAgent(command) {
+/* ---------- Agent 主流程（fetch + SSE 流式读取） ---------- */
+async function runAgent(command) {
   if (busy) return;
   busy = true;
   completed = false;
@@ -257,23 +256,65 @@ function runAgent(command) {
   document.querySelectorAll(".phase").forEach((p) => p.classList.remove("active", "done"));
   setStatus("正在连接后端…", "is-running");
 
-  es = new EventSource(`${API_BASE}/run?command=${encodeURIComponent(command)}`);
-
-  es.addEventListener("status", (e) => onStatus(JSON.parse(e.data)));
-  es.addEventListener("phase", (e) => onPhase(JSON.parse(e.data)));
-  es.addEventListener("plan", () => {});
-  es.addEventListener("step", (e) => onStep(JSON.parse(e.data)));
-  es.addEventListener("step-state", (e) => onStepState(JSON.parse(e.data)));
-  es.addEventListener("tool", (e) => onTool(JSON.parse(e.data)));
-  es.addEventListener("reason", (e) => onReason(JSON.parse(e.data)));
-  es.addEventListener("result", (e) => onResult(JSON.parse(e.data)));
-  es.addEventListener("done", (e) => onDone(JSON.parse(e.data)));
-
-  es.onerror = () => {
-    if (es) { es.close(); es = null; }
-    endBusy();
+  try {
+    const res = await fetch(`${API_BASE}/run`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ command }),
+    });
+    if (!res.ok) throw new Error("创建任务失败");
+    const data = await res.json();
+    await consumeStream(data.taskId);
+  } catch (err) {
     if (!completed) setStatus("连接中断，请重试", "is-running");
-  };
+  } finally {
+    endBusy();
+  }
+}
+
+async function consumeStream(taskId) {
+  const res = await fetch(`${API_BASE}/stream/${taskId}`);
+  if (!res.ok) throw new Error("流连接失败");
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true }).replace(/\r\n/g, "\n");
+    buf = consumeSseBuffer(buf);
+  }
+  reader.releaseLock();
+}
+
+function consumeSseBuffer(buf) {
+  let idx;
+  while ((idx = buf.indexOf("\n\n")) !== -1) {
+    const block = buf.slice(0, idx);
+    buf = buf.slice(idx + 2);
+    let event = "message";
+    let data = "";
+    block.split("\n").forEach((line) => {
+      if (line.startsWith("event:")) event = line.slice(6).trim();
+      else if (line.startsWith("data:")) data = line.slice(5).trim();
+    });
+    if (data) dispatchSseEvent(event, JSON.parse(data));
+  }
+  return buf;
+}
+
+function dispatchSseEvent(event, d) {
+  switch (event) {
+    case "status": onStatus(d); break;
+    case "phase": onPhase(d); break;
+    case "step": onStep(d); break;
+    case "step-state": onStepState(d); break;
+    case "tool": onTool(d); break;
+    case "reason": onReason(d); break;
+    case "result": onResult(d); break;
+    case "done": onDone(d); break;
+    default: break;
+  }
 }
 
 /* ---------- 示例指令 ---------- */
@@ -311,7 +352,6 @@ runBtn.addEventListener("click", () => {
 });
 
 resetBtn.addEventListener("click", () => {
-  if (es) { es.close(); es = null; }
   runView.hidden = true;
   composer.hidden = false;
   timeline.innerHTML = "";

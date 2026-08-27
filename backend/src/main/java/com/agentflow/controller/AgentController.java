@@ -3,12 +3,15 @@ package com.agentflow.controller;
 import com.agentflow.engine.AgentEngine;
 import com.agentflow.engine.ScenarioRegistry;
 import com.agentflow.llm.LlmClient;
+import com.agentflow.model.RunRequest;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
@@ -29,12 +32,22 @@ public class AgentController {
         this.llmClient = llmClient;
     }
 
-    @GetMapping(value = "/run", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public SseEmitter run(@RequestParam("command") String command) {
-        if (command == null || command.isBlank()) {
+    @PostMapping("/run")
+    public Map<String, String> run(@RequestBody RunRequest request) {
+        if (request == null || request.command() == null || request.command().isBlank()) {
             throw new IllegalArgumentException("command 不能为空");
         }
-        return engine.run(command.trim());
+        String taskId = engine.start(request.command().trim());
+        return Map.of("taskId", taskId);
+    }
+
+    @GetMapping(value = "/stream/{taskId}", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public SseEmitter stream(@PathVariable("taskId") String taskId) {
+        SseEmitter emitter = engine.stream(taskId);
+        if (emitter == null) {
+            throw new IllegalArgumentException("任务不存在或已过期，请重新提交");
+        }
+        return emitter;
     }
 
     @GetMapping("/scenarios")
