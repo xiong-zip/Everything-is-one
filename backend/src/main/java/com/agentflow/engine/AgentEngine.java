@@ -128,12 +128,43 @@ public class AgentEngine {
         return "react".equals(agentMode) && llmClient.isEnabled();
     }
 
+    /** 提交任务：立即后台执行（不依赖前端订阅），事件全部落库，随时可 attach 查看 */
     public String start(String command, List<Map<String, String>> history, String mode) {
         String taskId = UUID.randomUUID().toString();
         long runId = runStore.createRun(taskId, command);
-        boolean confirm = "confirm".equalsIgnoreCase(mode);
-        sessions.put(taskId, new RunSession(taskId, runId, command, sanitizeHistory(history), confirm));
+        RunSession session = new RunSession(taskId, runId, command, sanitizeHistory(history),
+                "confirm".equalsIgnoreCase(mode));
+        sessions.put(taskId, session);
+        session.markStarted();
+        executor.submit(() -> orchestrate(session));
         return taskId;
+    }
+
+    /**
+     * 无界面执行一个任务并等待完成（定时晨报等场景使用）。
+     * 返回 {taskId, status, summary, output}；超过 timeoutMs 返回当前状态。
+     */
+    public Map<String, String> executeHeadless(String command, long timeoutMs) {
+        String taskId = start(command, List.of(), "auto");
+        RunSession session = sessions.get(taskId);
+        long deadline = System.currentTimeMillis() + timeoutMs;
+        while (session != null && !session.isFinished() && System.currentTimeMillis() < deadline) {
+            sleep(500);
+        }
+        Map<String, String> out = new LinkedHashMap<>();
+        out.put("taskId", taskId);
+        if (session == null) {
+            out.put("status", "error");
+            out.put("summary", "任务会话丢失");
+            out.put("output", "");
+            return out;
+        }
+        Map<String, Object> run = runStore.getRun(session.runId());
+        out.put("status", run == null ? (session.isFinished() ? "done" : "running")
+                : String.valueOf(run.getOrDefault("status", "running")));
+        out.put("summary", run == null ? "" : String.valueOf(run.getOrDefault("summary", "")));
+        out.put("output", run == null ? "" : String.valueOf(run.getOrDefault("output", "")));
+        return out;
     }
 
     /** 只保留最近几轮且字段齐全的历史，避免 prompt 被无效内容撑爆 */
@@ -157,7 +188,7 @@ public class AgentEngine {
     }
 
     /**
-     * 订阅任务事件流：首次订阅触发执行；断线重连带 afterSeq 只补发缺失事件。
+     * 订阅任务事件流（任务在提交时已开始后台执行）：补发 afterSeq 之后的存量事件并挂接实时推送。
      * afterSeq = 调用方已收到的最大事件序号，-1 表示从头补发。
      */
     public SseEmitter stream(String taskId, int afterSeq) {
@@ -165,18 +196,16 @@ public class AgentEngine {
         if (session == null) {
             return replayOnly(taskId, afterSeq);
         }
-        boolean first = session.markStarted();
         SseEmitter emitter = new SseEmitter(EMITTER_TIMEOUT_MS);
         wireEmitter(emitter, session);
         // 补发与挂接在 session 锁内原子完成，与事件推送互斥，保证不重不漏
         synchronized (session) {
             replayFromStore(emitter, session.runId(), afterSeq);
-            session.attach(emitter);
-        }
-        if (first) {
-            executor.submit(() -> orchestrate(session));
-        } else if (session.isFinished()) {
-            emitter.complete();
+            if (session.isFinished()) {
+                emitter.complete();
+            } else {
+                session.attach(emitter);
+            }
         }
         return emitter;
     }
@@ -657,8 +686,10 @@ public class AgentEngine {
         String reportKind = detectReportKind(command);
         if (reportKind != null) {
             boolean weekly = "weekly".equals(reportKind);
-            steps.add(PlanStep.tool("拉取我的 GitLab 提交记录（" + (weekly ? "本周" : "今天") + "）",
-                    new ToolCall("gitlab.query", Map.of("type", "mine", "day", weekly ? "week" : "today"))));
+            String dayArg = weekly ? "week"
+                    : (command.contains("昨天") || command.contains("昨日")) ? "yesterday" : "today";
+            steps.add(PlanStep.tool("拉取我的 GitLab 提交记录（" + (weekly ? "本周" : dayArg.equals("yesterday") ? "昨天" : "今天") + "）",
+                    new ToolCall("gitlab.query", Map.of("type", "mine", "day", dayArg))));
             steps.add(PlanStep.think("归纳提交记录 · 提炼工作主线"));
             steps.add(PlanStep.write("生成工作" + (weekly ? "周报" : "日报")));
             return steps;
@@ -794,7 +825,8 @@ public class AgentEngine {
 
         if ("write".equals(s.kind())) {
             String reportKind = detectReportKind(command);
-            String system = reportKind != null ? reportWriteSystem(reportKind) : WRITE_SYSTEM;
+            LocalDate refDate = reportRefDate(command);
+            String system = reportKind != null ? reportWriteSystem(reportKind, refDate) : WRITE_SYSTEM;
             String userPrompt = "用户指令：" + command + "\n意图：" + intent.summary()
                     + "\n已获得的工具结果：\n" + toolSummary(toolResults) + histBlock
                     + "\n请生成最终成品内容。";
@@ -825,7 +857,7 @@ public class AgentEngine {
             boolean llmGenerated = content != null && !content.isBlank();
             if (!llmGenerated) {
                 content = reportKind != null
-                        ? templateReport(toolResults, "weekly".equals(reportKind))
+                        ? templateReport(toolResults, "weekly".equals(reportKind), refDate)
                         : templateWrite(command, intent, toolResults);
             }
             if (reportKind != null) {
@@ -881,18 +913,24 @@ public class AgentEngine {
 
     /* ================= GitLab 工作报告 ================= */
 
+    /** 报告基准日：指令提到昨天/昨日（晨报场景）用昨天，否则今天 */
+    private static LocalDate reportRefDate(String command) {
+        return command != null && (command.contains("昨天") || command.contains("昨日"))
+                ? LocalDate.now().minusDays(1)
+                : LocalDate.now();
+    }
+
     /** 报告生成 prompt：给出行结构示例 + 日期星期对照表 + 硬性约束，按「日期（星期）+ 当日工作主线」逐行排点 */
-    private String reportWriteSystem(String kind) {
+    private String reportWriteSystem(String kind, LocalDate ref) {
         boolean weekly = "weekly".equals(kind);
-        LocalDate today = LocalDate.now();
         String kindZh = weekly ? "周报" : "日报";
         String planZh = weekly ? "下周" : "明日";
         String scope = weekly
-                ? today.minusDays(6) + "（" + weekdayZh(today.minusDays(6)) + "）至 " + today + "（" + weekdayZh(today) + "）"
-                : today + "（" + weekdayZh(today) + "）";
+                ? ref.minusDays(6) + "（" + weekdayZh(ref.minusDays(6)) + "）至 " + ref + "（" + weekdayZh(ref) + "）"
+                : ref + "（" + weekdayZh(ref) + "）";
         // 模型不会算星期，直接给对照表
         StringBuilder lookup = new StringBuilder();
-        for (LocalDate d = weekly ? today.minusDays(6) : today; !d.isAfter(today); d = d.plusDays(1)) {
+        for (LocalDate d = weekly ? ref.minusDays(6) : ref; !d.isAfter(ref); d = d.plusDays(1)) {
             if (lookup.length() > 0) {
                 lookup.append("，");
             }
@@ -931,8 +969,7 @@ public class AgentEngine {
     }
 
     /** 模拟模式的报告模板：按天归组真实提交行，逐行排点，不做推断 */
-    private String templateReport(Map<String, String> toolResults, boolean weekly) {
-        LocalDate today = LocalDate.now();
+    private String templateReport(Map<String, String> toolResults, boolean weekly, LocalDate ref) {
         // 从工具结果里抽出 "MM-dd HH:mm · 标题" 形式的提交行，按日期归组
         Map<LocalDate, List<String>> byDay = new TreeMap<>();
         for (String v : toolResults.values()) {
@@ -940,7 +977,7 @@ public class AgentEngine {
             String detail = bar >= 0 ? v.substring(bar + 1) : v;
             for (String line : detail.split("；")) {
                 String t = line.trim();
-                LocalDate d = matchDate(t, today, weekly);
+                LocalDate d = matchDate(t, ref, weekly);
                 if (d != null) {
                     int dot = t.indexOf('·');
                     String title = dot >= 0 ? t.substring(dot + 1).trim() : t;
@@ -951,7 +988,7 @@ public class AgentEngine {
         StringBuilder sb = new StringBuilder();
         sb.append("【").append(reportDept).append("】个人效能").append(weekly ? "周报" : "日报").append("\n");
         if (byDay.isEmpty()) {
-            sb.append(today).append("（").append(weekdayZh(today)).append("）暂无提交记录\n");
+            sb.append(ref).append("（").append(weekdayZh(ref)).append("）暂无提交记录\n");
         } else {
             for (Map.Entry<LocalDate, List<String>> e : byDay.entrySet()) {
                 sb.append(e.getKey()).append("（").append(weekdayZh(e.getKey())).append("）")

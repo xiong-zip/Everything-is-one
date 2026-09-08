@@ -1,6 +1,6 @@
 <template>
   <div class="app">
-    <ChatHeader :llm="llm" :hasRuns="runs.length > 0" :confirmMode="confirmMode" @clear="clearAll()" @history="openHistory()" @toggle-confirm="confirmMode = !confirmMode" @tools="toolsOpen = true" />
+    <ChatHeader :llm="llm" :hasRuns="runs.length > 0" :confirmMode="confirmMode" @clear="clearAll()" @history="openHistory()" @toggle-confirm="confirmMode = !confirmMode" @tools="toolsOpen = true" @morning="morningOpen = true" />
 
     <!-- 任务历史抽屉：点击条目即可回放当时的完整执行过程 -->
     <div v-if="historyOpen" class="drawer-mask" @click.self="historyOpen = false">
@@ -41,6 +41,9 @@
     <!-- 工具管理抽屉：查看/导入/删除工具 -->
     <ToolsDrawer v-if="toolsOpen" @close="toolsOpen = false" />
 
+    <!-- 晨报机器人抽屉：定时状态 + 立即试跑 -->
+    <ScheduleDrawer v-if="morningOpen" @close="morningOpen = false" />
+
     <main class="chat-main" ref="scrollEl">
       <div class="chat-scroll">
         <div v-if="runs.length === 0" class="welcome">
@@ -77,6 +80,7 @@ import ChatHeader from './components/ChatHeader.vue'
 import AgentRun from './components/AgentRun.vue'
 import Composer from './components/Composer.vue'
 import ToolsDrawer from './components/ToolsDrawer.vue'
+import ScheduleDrawer from './components/ScheduleDrawer.vue'
 import { useAgent } from './composables/useAgent'
 
 const API_BASE = '/api/agent'
@@ -87,6 +91,7 @@ const scrollEl = ref(null)
 const prefill = ref({ command: '', nonce: 0 })
 const historyOpen = ref(false)
 const toolsOpen = ref(false)
+const morningOpen = ref(false)
 
 const {
   runs, busy, runAgent, stopRun, clearAll, confirmMode, confirmPlan,

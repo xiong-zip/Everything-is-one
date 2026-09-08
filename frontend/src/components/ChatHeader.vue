@@ -21,6 +21,12 @@
           :title="confirmMode ? '确认模式已开启：任务规划后先确认再执行' : '确认模式已关闭：规划后直接执行'"
           @click="$emit('toggle-confirm')"
         >{{ confirmMode ? '✓ 确认模式' : '确认模式' }}</button>
+        <button class="clear-btn history-btn" type="button" @click="$emit('morning')" title="晨报机器人：定时生成昨日日报并推送">
+          <svg viewBox="0 0 20 20" width="13" height="13" fill="none" aria-hidden="true" style="vertical-align:-2px;margin-right:3px">
+            <path d="M10 3.5a4.8 4.8 0 0 1 4.8 4.8c0 3.2.7 4.4 1.2 5H4c.5-.6 1.2-1.8 1.2-5A4.8 4.8 0 0 1 10 3.5z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+            <path d="M8.3 15.8a1.8 1.8 0 0 0 3.4 0" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+          </svg>晨报
+        </button>
         <button class="clear-btn history-btn" type="button" @click="$emit('tools')" title="工具管理：查看 / OpenAPI 导入 / 删除">
           <svg viewBox="0 0 20 20" width="13" height="13" fill="none" aria-hidden="true" style="vertical-align:-2px;margin-right:3px">
             <path d="M3 5.5A2.5 2.5 0 0 1 5.5 3h9A2.5 2.5 0 0 1 17 5.5v9a2.5 2.5 0 0 1-2.5 2.5h-9A2.5 2.5 0 0 1 3 14.5v-9z" stroke="currentColor" stroke-width="1.6"/>
@@ -45,5 +51,5 @@ defineProps({
   hasRuns: { type: Boolean, default: false },
   confirmMode: { type: Boolean, default: false },
 })
-defineEmits(['clear', 'history', 'toggle-confirm', 'tools'])
+defineEmits(['clear', 'history', 'toggle-confirm', 'tools', 'morning'])
 </script>

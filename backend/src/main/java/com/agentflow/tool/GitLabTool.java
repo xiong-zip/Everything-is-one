@@ -49,7 +49,7 @@ public class GitLabTool implements Tool {
 
     @Override
     public String argsHint() {
-        return "{\"project\": \"项目名（issues/mrs/pipelines 时必填）\", \"type\": \"mine|projects|issues|mrs|pipelines\", \"day\": \"today|week（mine 时可选：今天/本周的逐条提交记录）\"}";
+        return "{\"project\": \"项目名（issues/mrs/pipelines 时必填）\", \"type\": \"mine|projects|issues|mrs|pipelines\", \"day\": \"today|yesterday|week（mine 时可选：今天/昨天/本周的逐条提交记录）\"}";
     }
 
     @Override
@@ -67,8 +67,7 @@ public class GitLabTool implements Tool {
                     return listMineCommits(day);
                 }
                 return listMine(args, userCommand);
-            }
-            if ("projects".equals(type) || project == null) {
+            }            if ("projects".equals(type) || project == null) {
                 return listProjects(userCommand);
             }
             JsonNode proj = findProject(project);
@@ -89,17 +88,21 @@ public class GitLabTool implements Tool {
 
     /* ---------- 类型与时间窗推断 ---------- */
 
-    /** day 参数解析：显式参数优先，其次从指令关键词推断；返回 today/week/null */
+    /** day 参数解析：显式参数优先，其次从指令关键词推断；返回 today/yesterday/week/null */
     private String inferDay(String day, String command) {
         if (day != null) {
             String d = day.toLowerCase();
             if (d.contains("week") || d.contains("7")) return "week";
+            if (d.contains("yesterday")) return "yesterday";
             if (d.contains("today") || d.contains("day")) return "today";
         }
         if (command == null) return null;
         if (command.contains("周报") || command.contains("本周") || command.contains("这周")
                 || command.contains("一周") || command.contains("7天") || command.contains("近7")) {
             return "week";
+        }
+        if (command.contains("昨天") || command.contains("昨日")) {
+            return "yesterday";
         }
         if (command.contains("今天") || command.contains("今日")) {
             return "today";
@@ -198,11 +201,15 @@ public class GitLabTool implements Tool {
         String commitEmail = me.path("commit_email").asText("");
 
         boolean weekly = "week".equals(day);
+        boolean yesterday = "yesterday".equals(day);
         java.time.LocalDate today = java.time.LocalDate.now();
-        java.time.LocalDate startDate = weekly ? today.minusDays(6) : today;
+        java.time.LocalDate startDate = weekly ? today.minusDays(6) : yesterday ? today.minusDays(1) : today;
         java.time.ZoneId zone = java.time.ZoneId.systemDefault();
         OffsetDateTime since = startDate.atStartOfDay(zone).toOffsetDateTime();
-        OffsetDateTime until = OffsetDateTime.now(zone);
+        // yesterday 窗口截止今天 0 点（= 昨天结束）；today/week 截止现在
+        OffsetDateTime until = yesterday
+                ? today.atStartOfDay(zone).toOffsetDateTime()
+                : OffsetDateTime.now(zone);
 
         // 候选项目：时间窗内有推送事件的仓库
         JsonNode events = getJson("/api/v4/users/" + me.path("id").asLong()
@@ -261,7 +268,7 @@ public class GitLabTool implements Tool {
         String scope = weekly
                 ? "本周（" + startDate.format(java.time.format.DateTimeFormatter.ofPattern("MM.dd"))
                   + "–" + today.format(java.time.format.DateTimeFormatter.ofPattern("MM.dd")) + "）"
-                : "今天";
+                : yesterday ? "昨天" : "今天";
         if (list.isEmpty()) {
             return ToolResult.note("「" + myName + "」" + scope + "还没有提交记录，无日报/周报素材");
         }

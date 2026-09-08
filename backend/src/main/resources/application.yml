@@ -25,6 +25,16 @@ agentflow:
   report:
     # GitLab 工作报告抬头中的部门名
     department: ${AGENTFLOW_DEPT:中台研发部}
+  notify:
+    # 通用 Webhook（企微/钉钉机器人），晨报生成后推送；留空则只落库不推送
+    webhook: ${AGENTFLOW_NOTIFY_WEBHOOK:}
+  schedule:
+    morning-report:
+      # 自动晨报机器人：定时生成昨日日报并推送（需配置 GITLAB_TOKEN；推送需配置 Webhook）
+      enabled: ${AGENTFLOW_MORNING_REPORT:false}
+      # 工作日早上 9 点（Spring cron，本地时区）
+      cron: ${AGENTFLOW_MORNING_CRON:0 0 9 * * MON-FRI}
+      command: ${AGENTFLOW_MORNING_COMMAND:根据我的 GitLab 提交记录生成昨天的工作日报}
 
 logging:
   level:
