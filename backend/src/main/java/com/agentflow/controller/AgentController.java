@@ -51,13 +51,24 @@ public class AgentController {
         return Map.of("taskId", taskId);
     }
 
+    /** afterSeq：调用方已收到的最大事件序号，断线重连时只补发缺失部分；-1（默认）从头补发 */
     @GetMapping(value = "/stream/{taskId}", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public SseEmitter stream(@PathVariable("taskId") String taskId) {
-        SseEmitter emitter = engine.stream(taskId);
+    public SseEmitter stream(@PathVariable("taskId") String taskId,
+                             @RequestParam(name = "afterSeq", defaultValue = "-1") int afterSeq) {
+        SseEmitter emitter = engine.stream(taskId, afterSeq);
         if (emitter == null) {
             throw new IllegalArgumentException("任务不存在或已过期，请重新提交");
         }
         return emitter;
+    }
+
+    /** 手动停止：引擎在最近的检查点收尾，已产出的事件仍保留在历史中 */
+    @PostMapping("/cancel/{taskId}")
+    public Map<String, String> cancel(@PathVariable("taskId") String taskId) {
+        if (!engine.cancel(taskId)) {
+            throw new IllegalArgumentException("任务不存在或已结束");
+        }
+        return Map.of("ok", "cancelled");
     }
 
     /* ---------- 任务历史与回放 ---------- */

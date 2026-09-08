@@ -64,6 +64,8 @@ public class RunStore {
                     "event TEXT NOT NULL," +
                     "data TEXT NOT NULL)");
             st.execute("CREATE INDEX IF NOT EXISTS idx_events_run ON events(run_id, seq)");
+            // 上次进程未正常收尾的任务（停留 running）标记为中断，避免历史里永远"进行中"
+            st.executeUpdate("UPDATE runs SET status = 'interrupted' WHERE status = 'running'");
         } catch (Exception ex) {
             log.error("初始化 SQLite 失败，历史记录将不可用：{}", ex.getMessage());
         }
@@ -172,23 +174,7 @@ public class RunStore {
         if (run == null) {
             return null;
         }
-        List<Map<String, Object>> events = new ArrayList<>();
-        try (Connection c = open();
-             PreparedStatement ps = c.prepareStatement(
-                     "SELECT event, data FROM events WHERE run_id = ? ORDER BY seq")) {
-            ps.setLong(1, runId);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    Map<String, Object> e = new LinkedHashMap<>();
-                    e.put("event", rs.getString("event"));
-                    e.put("data", mapper.readTree(rs.getString("data")));
-                    events.add(e);
-                }
-            }
-        } catch (Exception ex) {
-            log.warn("读取事件流失败：{}", ex.getMessage());
-        }
-        run.put("events", events);
+        run.put("events", listEvents(runId, -1));
         return run;
     }
 
@@ -204,6 +190,43 @@ public class RunStore {
             }
         } catch (Exception ex) {
             log.warn("删除运行记录失败：{}", ex.getMessage());
+        }
+    }
+
+    /** afterSeq 之后的存量事件（断线续传补发用），data 反序列化为 JsonNode */
+    public List<Map<String, Object>> listEvents(long runId, int afterSeq) {
+        List<Map<String, Object>> events = new ArrayList<>();
+        try (Connection c = open();
+             PreparedStatement ps = c.prepareStatement(
+                     "SELECT event, data FROM events WHERE run_id = ? AND seq > ? ORDER BY seq")) {
+            ps.setLong(1, runId);
+            ps.setInt(2, afterSeq);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    Map<String, Object> e = new LinkedHashMap<>();
+                    e.put("event", rs.getString("event"));
+                    e.put("data", mapper.readTree(rs.getString("data")));
+                    events.add(e);
+                }
+            }
+        } catch (Exception ex) {
+            log.warn("读取事件流失败：{}", ex.getMessage());
+        }
+        return events;
+    }
+
+    /** 会话不在内存时按 taskId 反查最近一次运行 id */
+    public Long findRunIdByTaskId(String taskId) {
+        try (Connection c = open();
+             PreparedStatement ps = c.prepareStatement(
+                     "SELECT id FROM runs WHERE task_id = ? ORDER BY id DESC LIMIT 1")) {
+            ps.setString(1, taskId);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next() ? rs.getLong(1) : null;
+            }
+        } catch (Exception ex) {
+            log.warn("按 taskId 查询运行记录失败：{}", ex.getMessage());
+            return null;
         }
     }
 

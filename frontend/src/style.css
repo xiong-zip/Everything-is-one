@@ -213,6 +213,7 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 }
 .agent-status.is-running { color: var(--mint-600); }
 .agent-status.is-done { color: var(--mint-700); }
+.agent-status.is-error { color: var(--rose); }
 .agent-body { padding: 18px 20px 20px; }
 
 /* 意图卡 */

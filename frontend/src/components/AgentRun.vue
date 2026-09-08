@@ -61,6 +61,9 @@
           <button class="btn btn-ghost copy-btn" type="button" @click="copyFinal">
             {{ copied ? '✓ 已复制' : '复制结果' }}
           </button>
+          <button class="btn btn-ghost" type="button" @click="download('txt')">下载 .txt</button>
+          <button class="btn btn-ghost" type="button" @click="download('md')">下载 .md</button>
+          <button class="btn btn-ghost" type="button" @click="printFinal">打印 / PDF</button>
         </div>
       </div>
     </div>
@@ -93,5 +96,45 @@ async function copyFinal() {
   }
   copied.value = true
   setTimeout(() => (copied.value = false), 1600)
+}
+
+/* ---------- 报告导出：.txt / .md 下载 + 打印（浏览器打印为 PDF） ---------- */
+
+function fileBase() {
+  const d = new Date()
+  const stamp = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`
+  const key = (props.run.final.summary || props.run.command || 'result')
+    .slice(0, 16)
+    .replace(/[\\/:*?"<>|\s]+/g, '')
+  return `AgentFlow-${stamp}-${key}`
+}
+
+function download(ext) {
+  const text = ext === 'md'
+    ? `# ${props.run.command}\n\n${props.run.final.output}\n`
+    : props.run.final.output
+  const blob = new Blob([text], { type: `text/${ext === 'md' ? 'markdown' : 'plain'};charset=utf-8` })
+  const a = document.createElement('a')
+  a.href = URL.createObjectURL(blob)
+  a.download = `${fileBase()}.${ext}`
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  URL.revokeObjectURL(a.href)
+}
+
+function printFinal() {
+  const w = window.open('', '_blank', 'width=760,height=960')
+  if (!w) return
+  const esc = (s) => (s || '').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]))
+  w.document.title = fileBase()
+  w.document.write(
+    `<!doctype html><html><head><meta charset="utf-8"><title>${esc(w.document.title)}</title></head>` +
+    `<body style="margin:0"><pre style="font-family:Consolas,'Courier New',monospace;font-size:13px;` +
+    `line-height:1.9;white-space:pre-wrap;word-break:break-word;padding:36px 40px;">${esc(props.run.final.output)}</pre></body></html>`
+  )
+  w.document.close()
+  w.focus()
+  w.print()
 }
 </script>

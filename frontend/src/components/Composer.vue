@@ -15,11 +15,11 @@
         <button
           class="btn btn-primary send-btn"
           :class="{ running: busy }"
-          :disabled="busy || !command.trim()"
+          :disabled="!busy && !command.trim()"
           type="button"
-          @click="send"
+          @click="busy ? emit('stop') : send()"
         >
-          <span class="send-ico" aria-hidden="true"></span>{{ busy ? '执行中' : '执行' }}
+          <span class="send-ico" aria-hidden="true"></span>{{ busy ? '停止' : '执行' }}
         </button>
       </div>
       <div class="composer-meta">
@@ -50,7 +50,7 @@ const props = defineProps({
   prefill: { type: Object, default: () => ({ command: '', nonce: 0 }) },
 })
 
-const emit = defineEmits(['send'])
+const emit = defineEmits(['send', 'stop'])
 
 const command = ref('')
 const inputEl = ref(null)

@@ -64,7 +64,7 @@
       </div>
     </main>
 
-    <Composer :busy="busy" :examples="examples" :prefill="prefill" @send="runAgent" />
+    <Composer :busy="busy" :examples="examples" :prefill="prefill" @send="runAgent" @stop="stopRun" />
   </div>
 </template>
 
@@ -84,7 +84,7 @@ const prefill = ref({ command: '', nonce: 0 })
 const historyOpen = ref(false)
 
 const {
-  runs, busy, runAgent, clearAll,
+  runs, busy, runAgent, stopRun, clearAll,
   replayRun, history, historyLoading, loadHistory, deleteHistoryRun, clearHistoryAll,
 } = useAgent()
 

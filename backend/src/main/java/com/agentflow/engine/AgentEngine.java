@@ -15,7 +15,6 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
-import java.io.IOException;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -41,6 +40,7 @@ public class AgentEngine {
     private static final int MAX_REASON_LINES = 10;
     private static final int MAX_HISTORY_TURNS = 5;
     private static final int STREAM_FLUSH_CHARS = 16;
+    private static final int MAX_SESSIONS = 500;
 
     private static final String INTENT_SYSTEM =
             "你是 AgentFlow 的意图分析模块。分析用户指令，输出一个 JSON 对象：" +
@@ -87,11 +87,7 @@ public class AgentEngine {
     private final String reportDept;
     private final ObjectMapper mapper = new ObjectMapper();
     private final ExecutorService executor = Executors.newCachedThreadPool();
-    private final ConcurrentHashMap<String, PendingTask> tasks = new ConcurrentHashMap<>();
-
-    /** 已提交待消费的任务：指令 + 多轮历史 + 持久化运行 id */
-    private record PendingTask(String command, List<Map<String, String>> history, long runId) {
-    }
+    private final ConcurrentHashMap<String, RunSession> sessions = new ConcurrentHashMap<>();
 
     public AgentEngine(ToolRegistry toolRegistry, LlmClient llmClient, RunStore runStore,
                        @Value("${agentflow.report.department:中台研发部}") String reportDept) {
@@ -104,7 +100,7 @@ public class AgentEngine {
     public String start(String command, List<Map<String, String>> history) {
         String taskId = UUID.randomUUID().toString();
         long runId = runStore.createRun(taskId, command);
-        tasks.put(taskId, new PendingTask(command, sanitizeHistory(history), runId));
+        sessions.put(taskId, new RunSession(taskId, runId, command, sanitizeHistory(history)));
         return taskId;
     }
 
@@ -128,27 +124,117 @@ public class AgentEngine {
         return turns;
     }
 
-    public SseEmitter stream(String taskId) {
-        PendingTask task = tasks.remove(taskId);
-        if (task == null) {
+    /**
+     * 订阅任务事件流：首次订阅触发执行；断线重连带 afterSeq 只补发缺失事件。
+     * afterSeq = 调用方已收到的最大事件序号，-1 表示从头补发。
+     */
+    public SseEmitter stream(String taskId, int afterSeq) {
+        RunSession session = sessions.get(taskId);
+        if (session == null) {
+            return replayOnly(taskId, afterSeq);
+        }
+        boolean first = session.markStarted();
+        SseEmitter emitter = new SseEmitter(EMITTER_TIMEOUT_MS);
+        wireEmitter(emitter, session);
+        // 补发与挂接在 session 锁内原子完成，与事件推送互斥，保证不重不漏
+        synchronized (session) {
+            replayFromStore(emitter, session.runId(), afterSeq);
+            session.attach(emitter);
+        }
+        if (first) {
+            executor.submit(() -> orchestrate(session));
+        } else if (session.isFinished()) {
+            emitter.complete();
+        }
+        return emitter;
+    }
+
+    /** 请求取消：引擎在步骤边界与流式生成回调处收尾 */
+    public boolean cancel(String taskId) {
+        RunSession session = sessions.get(taskId);
+        if (session == null || session.isFinished()) {
+            return false;
+        }
+        session.cancel();
+        return true;
+    }
+
+    private void wireEmitter(SseEmitter emitter, RunSession session) {
+        emitter.onTimeout(() -> {
+            session.detachEmitter(emitter);
+            emitter.complete();
+        });
+        emitter.onError(e -> session.detachEmitter(emitter));
+        emitter.onCompletion(() -> session.detachEmitter(emitter));
+    }
+
+    /** 从 SQLite 补发存量事件；订阅方已断开则停止补发 */
+    private void replayFromStore(SseEmitter emitter, long runId, int afterSeq) {
+        for (Map<String, Object> e : runStore.listEvents(runId, afterSeq)) {
+            try {
+                emitter.send(SseEmitter.event().name((String) e.get("event")).data(e.get("data")));
+            } catch (Exception ex) {
+                return;
+            }
+        }
+    }
+
+    /** 会话不在内存（服务重启或已淘汰）：按库内事件补发后直接收流 */
+    private SseEmitter replayOnly(String taskId, int afterSeq) {
+        Long runId = runStore.findRunIdByTaskId(taskId);
+        if (runId == null) {
             return null;
         }
         SseEmitter emitter = new SseEmitter(EMITTER_TIMEOUT_MS);
-        RunRecorder recorder = new RunRecorder(emitter, task.runId());
-        emitter.onTimeout(() -> {
-            recorder.finish("interrupted", "", "");
+        executor.submit(() -> {
+            replayFromStore(emitter, runId, afterSeq);
             emitter.complete();
         });
-        executor.submit(() -> orchestrate(recorder, task));
         return emitter;
+    }
+
+    private void completeEmitter(RunSession session) {
+        SseEmitter emitter = session.emitter();
+        if (emitter != null) {
+            try {
+                emitter.complete();
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
+    /** 会话数超限时淘汰已结束的，防止内存缓慢增长 */
+    private void evictFinishedSessions() {
+        if (sessions.size() <= MAX_SESSIONS) {
+            return;
+        }
+        for (Map.Entry<String, RunSession> e : sessions.entrySet()) {
+            if (sessions.size() <= MAX_SESSIONS * 3 / 4) {
+                break;
+            }
+            RunSession s = e.getValue();
+            if (s.isFinished()) {
+                sessions.remove(e.getKey(), s);
+            }
+        }
+    }
+
+    private static void checkCancelled(RunSession session) {
+        if (session.isCancelled()) {
+            throw new CancelledException();
+        }
+    }
+
+    /** 引擎内部取消信号：在步骤边界与流式生成回调处抛出 */
+    private static final class CancelledException extends RuntimeException {
     }
 
     /* ================= 编排主流程 ================= */
 
-    private void orchestrate(RunRecorder recorder, PendingTask task) {
-        SseEmitter emitter = recorder.emitter();
-        String command = task.command();
-        String histBlock = historyBlock(task.history());
+    private void orchestrate(RunSession session) {
+        RunRecorder recorder = new RunRecorder(session);
+        String command = session.command();
+        String histBlock = historyBlock(session.history());
         try {
             /* 阶段一：意图分析（真实抽取，非演出） */
             recorder.send("status", map("text", "正在解析指令意图…", "cls", "is-running"));
@@ -177,7 +263,8 @@ public class AgentEngine {
             Map<String, String> toolResults = new LinkedHashMap<>();
             String writeOutput = null;
             for (int i = 0; i < total; i++) {
-                writeOutput = executeStep(recorder, command, intent, histBlock, steps.get(i), i, toolResults, writeOutput);
+                checkCancelled(session);
+                writeOutput = executeStep(recorder, session, command, intent, histBlock, steps.get(i), i, toolResults, writeOutput);
             }
             recorder.send("phase", map("name", "execute", "state", "done"));
 
@@ -194,17 +281,16 @@ public class AgentEngine {
             recorder.send("phase", map("name", "merge", "state", "done"));
             recorder.send("status", map("text", "✓ 执行完成", "cls", "is-done"));
             recorder.finish("done", finalOut[0], finalOut[1]);
-            emitter.complete();
-        } catch (IOException ex) {
-            recorder.finish("interrupted", "", "");
-            emitter.complete();
+            completeEmitter(session);
+        } catch (CancelledException ex) {
+            recorder.send("status", map("text", "已手动停止", "cls", "is-done"));
+            recorder.finish("cancelled", "已手动停止", "");
+            completeEmitter(session);
         } catch (Exception ex) {
             log.error("任务执行异常", ex);
+            recorder.send("status", map("text", "✕ 任务执行异常，请重试", "cls", "is-error"));
             recorder.finish("error", "任务执行异常", "");
-            try {
-                emitter.completeWithError(ex);
-            } catch (Exception ignored) {
-            }
+            completeEmitter(session);
         }
     }
 
@@ -387,9 +473,10 @@ public class AgentEngine {
     /* ================= 步骤执行 ================= */
 
     /** 返回 write 步生成的内容（供汇总复用） */
-    private String executeStep(RunRecorder recorder, String command, Intent intent, String histBlock,
+    private String executeStep(RunRecorder recorder, RunSession session, String command, Intent intent, String histBlock,
                                PlanStep s, int index, Map<String, String> toolResults,
-                               String writeOutput) throws IOException {
+                               String writeOutput) {
+        checkCancelled(session);
         recorder.send("step-state", map("index", index, "state", "running"));
         recorder.send("status", map("text", "正在执行 · " + s.title(), "cls", "is-running"));
 
@@ -459,13 +546,17 @@ public class AgentEngine {
             String content = null;
             if (llmClient.isEnabled()) {
                 try {
-                    // 流式生成：增量片段实时推送，最终以完整 result 事件为准
-                    content = llmClient.chatStream(system, userPrompt, piece -> recorder.streamDelta(index, piece));
+                    // 流式生成：增量片段实时推送，最终以完整 result 事件为准；取消时回调内抛出中断信号
+                    content = llmClient.chatStream(system, userPrompt, piece -> {
+                        checkCancelled(session);
+                        recorder.streamDelta(index, piece);
+                    });
                 } catch (Exception ex) {
                     log.warn("LLM 流式生成失败，尝试非流式重试: {}", ex.getMessage());
                 } finally {
                     recorder.flushStream(index);
                 }
+                checkCancelled(session);
                 if (content == null || content.isBlank()) {
                     // 流式异常或空响应（多为瞬时抖动），退化为非流式整段生成
                     try {
@@ -812,28 +903,36 @@ public class AgentEngine {
     /* ================= SSE 发送 + 持久化 ================= */
 
     /**
-     * 单次运行的记录器：每个 SSE 事件边发送边落库（回放用）；
-     * write 步的流式增量攒一小段再发，降低前端重渲染频率。
+     * 单次运行的记录器：每个事件先落 SQLite（回放/断线续传的事实来源），再推送订阅连接；
+     * 推送失败只摘除订阅，任务继续执行。write 步的流式增量攒一小段再发，降低前端重渲染频率。
      */
     private class RunRecorder {
-        private final SseEmitter emitter;
-        private final long runId;
+        private final RunSession session;
         private final AtomicBoolean finished = new AtomicBoolean(false);
         private final StringBuilder streamBuf = new StringBuilder();
         private int seq = 0;
 
-        RunRecorder(SseEmitter emitter, long runId) {
-            this.emitter = emitter;
-            this.runId = runId;
+        RunRecorder(RunSession session) {
+            this.session = session;
         }
 
-        SseEmitter emitter() {
-            return emitter;
-        }
-
-        void send(String event, Object data) throws IOException {
-            emitter.send(SseEmitter.event().name(event).data(data));
-            runStore.saveEvent(runId, seq++, event, data);
+        @SuppressWarnings("unchecked")
+        void send(String event, Object data) {
+            synchronized (session) {
+                if (data instanceof Map) {
+                    ((Map<String, Object>) data).putIfAbsent("seq", seq);
+                }
+                runStore.saveEvent(session.runId(), seq, event, data);
+                seq++;
+                SseEmitter emitter = session.emitter();
+                if (emitter != null) {
+                    try {
+                        emitter.send(SseEmitter.event().name(event).data(data));
+                    } catch (Exception ex) {
+                        session.detachEmitter(emitter);
+                    }
+                }
+            }
         }
 
         void streamDelta(int stepIndex, String piece) {
@@ -849,17 +948,15 @@ public class AgentEngine {
             }
             String delta = streamBuf.toString();
             streamBuf.setLength(0);
-            try {
-                send("result-delta", map("index", stepIndex, "delta", delta));
-            } catch (Exception ex) {
-                log.warn("流式增量推送失败: {}", ex.getMessage());
-            }
+            send("result-delta", map("index", stepIndex, "delta", delta));
         }
 
-        /** 收尾只生效一次：正常 done / 异常 error / 超时 interrupted */
+        /** 收尾只生效一次：正常 done / 异常 error / 取消 cancelled */
         void finish(String status, String summary, String output) {
             if (finished.compareAndSet(false, true)) {
-                runStore.finishRun(runId, status, summary, output);
+                runStore.finishRun(session.runId(), status, summary, output);
+                session.markFinished();
+                evictFinishedSessions();
             }
         }
     }

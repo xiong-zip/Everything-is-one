@@ -13,6 +13,8 @@ function newRun(id, command, replayed = false) {
     id,
     command,
     replayed,
+    lastSeq: -1, // 已收到的最大事件序号，断线重连时从这之后补发
+    stopped: false, // 用户主动停止（与连接异常区分）
     status: { text: replayed ? '读取历史记录…' : '正在连接后端…', cls: replayed ? 'is-done' : 'is-running' },
     intent: null, // { summary, entities: [] }
     phases: { understand: '', plan: '', execute: '', merge: '' },
@@ -28,6 +30,8 @@ export function useAgent() {
   const history = ref([])
   const historyLoading = ref(false)
   let runSeq = 0
+  let activeTaskId = null
+  let activeAbort = null
 
   async function typeInto(target, text, chunk = 2) {
     if (reduceMotion()) {
@@ -124,7 +128,7 @@ export function useAgent() {
     if (fn) fn(d)
   }
 
-  function consumeSseBuffer(handlers, buf) {
+  function consumeSseBuffer(handlers, buf, run) {
     let idx
     while ((idx = buf.indexOf('\n\n')) !== -1) {
       const block = buf.slice(0, idx)
@@ -135,13 +139,19 @@ export function useAgent() {
         if (line.startsWith('event:')) event = line.slice(6).trim()
         else if (line.startsWith('data:')) data = line.slice(5).trim()
       })
-      if (data) dispatch(handlers, event, JSON.parse(data))
+      if (data) {
+        const parsed = JSON.parse(data)
+        if (run && parsed.seq != null) run.lastSeq = parsed.seq
+        dispatch(handlers, event, parsed)
+      }
     }
     return buf
   }
 
-  async function consumeStream(handlers, taskId) {
-    const res = await fetch(`${API_BASE}/stream/${taskId}`)
+  async function consumeStream(handlers, taskId, run, afterSeq = -1) {
+    activeAbort = new AbortController()
+    const q = afterSeq >= 0 ? `?afterSeq=${afterSeq}` : ''
+    const res = await fetch(`${API_BASE}/stream/${taskId}${q}`, { signal: activeAbort.signal })
     if (!res.ok) throw new Error('流连接失败')
     const reader = res.body.getReader()
     const decoder = new TextDecoder()
@@ -150,9 +160,23 @@ export function useAgent() {
       const { done, value } = await reader.read()
       if (done) break
       buf += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n')
-      buf = consumeSseBuffer(handlers, buf)
+      buf = consumeSseBuffer(handlers, buf, run)
     }
     reader.releaseLock()
+  }
+
+  /* 断线自动重连：带 lastSeq 续读缺失事件；服务端已结束时补发完会自然收流 */
+  async function consumeWithResume(handlers, taskId, run, retries = 3) {
+    try {
+      await consumeStream(handlers, taskId, run, run.lastSeq ?? -1)
+    } catch (err) {
+      if (run.stopped || err.name === 'AbortError' || run.final.visible) return
+      if (retries > 0) {
+        await sleep(1200)
+        return consumeWithResume(handlers, taskId, run, retries - 1)
+      }
+      throw err
+    }
   }
 
   /* ---------- 主流程：追加一轮对话并执行 ---------- */
@@ -177,14 +201,30 @@ export function useAgent() {
       })
       if (!res.ok) throw new Error('创建任务失败')
       const data = await res.json()
-      await consumeStream(handlers, data.taskId)
+      activeTaskId = data.taskId
+      await consumeWithResume(handlers, data.taskId, run)
     } catch (err) {
       if (!run.final.visible) {
-        handlers.status({ text: '连接中断，请重试', cls: 'is-running' })
+        handlers.status(run.stopped
+          ? { text: '已停止', cls: 'is-done' }
+          : { text: '连接中断，请重试', cls: 'is-running' })
       }
     } finally {
       busy.value = false
+      activeTaskId = null
+      activeAbort = null
     }
+  }
+
+  /* ---------- 手动停止：通知后端取消 + 中断本地流读取 ---------- */
+  async function stopRun() {
+    if (!activeTaskId) return
+    const run = runs.value[runs.value.length - 1]
+    if (run) run.stopped = true
+    try {
+      await fetch(`${API_BASE}/cancel/${activeTaskId}`, { method: 'POST' })
+    } catch { /* 后端不可达时仅本地中止 */ }
+    if (activeAbort) activeAbort.abort()
   }
 
   /* ---------- 历史回放：存量事件走同一套渲染管线，瞬时呈现 ---------- */
@@ -236,7 +276,7 @@ export function useAgent() {
   }
 
   return {
-    runs, busy, runAgent, clearAll,
+    runs, busy, runAgent, stopRun, clearAll,
     replayRun, history, historyLoading, loadHistory, deleteHistoryRun, clearHistoryAll,
   }
 }
