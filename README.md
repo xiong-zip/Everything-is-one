@@ -4,6 +4,22 @@
 
 界面为清新的薄荷青绿风格对话流单页：指令气泡 + Agent 执行过程（意图、阶段、步骤时间线、结果卡片）+ 最终答案，支持多轮任务历史。
 
+## 核心能力
+
+| 能力 | 说明 |
+|---|---|
+| **任务后台执行** | 提交即后台运行，关页面不影响；随时连流查看，断线自动续传（按事件序号补发） |
+| **流式中断** | 执行中可随时「停止」，引擎在最近的检查点安全收尾 |
+| **计划人工放行** | 「确认模式」：任务规划后先出计划卡，可勾选跳过、编辑工具参数再执行；写操作工具**强制**走此流程 |
+| **无依赖步骤并行** | 规划时标注同一并行组的 tool 步并发执行（上限 3） |
+| **ReAct 自主循环** | `AGENTFLOW_AGENT_MODE=react` 开启：Agent 逐轮决策下一步动作，而非一次规划到底 |
+| **OpenAPI 一键转工具** | 贴一个 Swagger/OpenAPI 文档地址，GET 接口自动变成 Agent 可调用的工具（持久化，重启不丢） |
+| **GitLab 只读查询 + 受控写操作** | 提交/项目/Issue/MR/流水线查询；创建 Issue、评论等低风险写操作需人工确认 |
+| **GitLab 效能日报/周报** | 拉取时间窗内逐条提交，LLM 归纳成固定格式报告，支持「今天/昨天/本周」 |
+| **自动晨报机器人** | 定时（默认工作日 9 点）生成昨日日报并推送到企微/钉钉 Webhook，全程无人值守 |
+| **历史回放** | 每个任务的完整事件流落 SQLite，可随时原样回放 |
+| **报告导出** | 结果一键下载 .txt / .md，或打印为 PDF |
+
 ## 两种运行模式
 
 | 模式 | 触发条件 | 行为 |
@@ -39,13 +55,15 @@ Everything-is-one/
     ├── mvnw / mvnw.cmd         # Maven Wrapper，无需预装 Maven
     └── src/main/
         ├── java/com/agentflow/
-        │   ├── AgentflowApplication.java   # Spring Boot 入口
-        │   ├── config/WebConfig.java       # CORS 配置
-        │   ├── controller/AgentController.java  # REST API（/scenarios 返回示例建议）
-        │   ├── engine/AgentEngine.java     # 通用编排：意图分析 → LLM/启发式规划 → 执行 → 汇总
-        │   ├── llm/LlmClient.java          # DeepSeek 客户端（含 JSON mode）
-        │   ├── model/                      # PlanStep / ToolCall / RunRequest
-        │   └── tool/                       # 工具层（天气/股票为真实 API；交通/POI 走 LLM，模拟模式优雅降级）
+        │   ├── AgentflowApplication.java   # Spring Boot 入口（@EnableScheduling）
+        │   ├── config/                    # WebConfig(CORS) / GlobalExceptionHandler(400)
+        │   ├── controller/                # AgentController / ToolsController / ScheduleController
+        │   ├── engine/                    # AgentEngine(编排) / RunSession(会话) / RunStore(SQLite)
+        │   ├── schedule/                  # 晨报机器人（ScheduleService / ScheduleStore）
+        │   ├── notify/                    # Webhook 推送（NotifyService）
+        │   ├── llm/LlmClient.java         # DeepSeek 客户端（JSON mode + 流式）
+        │   ├── model/                     # PlanStep / ToolCall / RunRequest / PlanConfirmRequest
+        │   └── tool/                      # 内置工具 + dynamic/（OpenAPI 导入的动态工具）
         └── resources/
             ├── application.yml             # 配置（端口 8080 等）
             └── static/                     # 前端构建产物（自动生成，勿手改）
@@ -89,8 +107,15 @@ start.bat
 | 变量 | 必填 | 说明 |
 |---|---|---|
 | `DEEPSEEK_API_KEY` | 启用 LLM 必填 | DeepSeek API Key，缺失时以模拟模式运行（流程演示不受影响） |
-| `LLM_PROXY_HOST` | 否 | LLM 出站代理地址 |
-| `LLM_PROXY_PORT` | 否 | LLM 出站代理端口 |
+| `LLM_PROXY_HOST` / `LLM_PROXY_PORT` | 否 | LLM 出站代理 |
+| `GITLAB_URL` / `GITLAB_TOKEN` | 否 | 公司内部 GitLab（Personal Access Token，scope 选 `read_api`；写操作需 `api`） |
+| `AGENTFLOW_AGENT_MODE` | 否 | `plan`（默认，先规划再执行）/ `react`（自主循环逐步决策） |
+| `AGENTFLOW_NOTIFY_WEBHOOK` | 否 | 企微/钉钉机器人 Webhook，晨报生成后推送 |
+| `AGENTFLOW_MORNING_REPORT` | 否 | 自动晨报开关（默认 `false`） |
+| `AGENTFLOW_MORNING_CRON` | 否 | 晨报 cron（默认 `0 0 9 * * MON-FRI`，本地时区） |
+| `AGENTFLOW_MORNING_COMMAND` | 否 | 晨报指令（默认「根据我的 GitLab 提交记录生成昨天的工作日报」） |
+| `AGENTFLOW_DB` | 否 | SQLite 数据库路径（默认 `./data/agentflow.db`） |
+| `AGENTFLOW_DEPT` | 否 | 报告抬头部门名（默认 `中台研发部`） |
 
 ## 前端开发模式（可选）
 
@@ -121,12 +146,25 @@ java -jar target/agentflow-backend-0.0.1-SNAPSHOT.jar   # 运行 jar
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| POST | `/api/agent/run` | 发起任务（任意自然语言指令） |
-| GET | `/api/agent/stream/{taskId}` | SSE 流式获取执行过程 |
-| GET | `/api/agent/scenarios` | 示例建议（不限制可执行指令） |
-| GET | `/api/agent/info` | 服务信息 |
+| POST | `/api/agent/run` | 发起任务（body 可带 `mode: auto/confirm`） |
+| GET | `/api/agent/stream/{taskId}?afterSeq=N` | SSE 订阅执行过程（断线重连带 afterSeq 只补发缺失事件） |
+| POST | `/api/agent/cancel/{taskId}` | 手动停止任务 |
+| POST | `/api/agent/run/{taskId}/confirm` | confirm 模式回传确认/编辑后的计划 |
+| GET/DELETE | `/api/agent/history` `/{id}` | 任务历史列表 / 回放 / 删除 / 清空 |
+| GET | `/api/tools` | 已注册工具列表（含动态工具、写操作标记） |
+| POST | `/api/tools/openapi` | 从 OpenAPI/Swagger 文档导入工具（body: `{"url": "..."}`） |
+| DELETE | `/api/tools/{name}` | 删除动态工具（内置工具不可删） |
+| GET | `/api/schedule/status` | 晨报机器人配置与最近执行 |
+| POST | `/api/schedule/run-now` | 立即试跑晨报（同步返回，约 1 分钟） |
+| GET | `/api/agent/scenarios` / `/api/agent/info` | 示例建议 / 服务信息 |
 
-SSE 事件：`status` / `phase` / `intent`（意图摘要+实体）/ `plan` / `step` / `step-state` / `tool` / `reason` / `result` / `done`。
+SSE 事件：`status` / `phase` / `intent` / `plan` / `plan-proposal`（计划提案，等待确认）/ `plan-confirmed` / `step` / `step-state` / `tool` / `reason` / `result-delta`（流式增量）/ `result` / `done`；每个事件携带 `seq` 序号供断线续传。
+
+## 运行测试
+
+```bash
+cd backend && ./mvnw test    # 10 个单测：工具注册表 / 动态工具 / 任务存储（含 afterSeq 增量）
+```
 
 ## 配置
 
