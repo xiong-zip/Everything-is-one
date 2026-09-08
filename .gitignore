@@ -25,3 +25,6 @@ Thumbs.db
 
 # ZCode 会话目录
 .zcode/
+
+# 任务历史数据库（SQLite，运行时自动创建）
+data/

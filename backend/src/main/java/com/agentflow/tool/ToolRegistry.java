@@ -12,11 +12,13 @@ public class ToolRegistry {
 
     private final Map<String, Tool> tools = new LinkedHashMap<>();
 
-    public ToolRegistry(WeatherTool weatherTool, StockTool stockTool, TransitTool transitTool, PoiTool poiTool) {
+    public ToolRegistry(WeatherTool weatherTool, StockTool stockTool, TransitTool transitTool, PoiTool poiTool,
+                        GitLabTool gitLabTool) {
         tools.put(weatherTool.name(), weatherTool);
         tools.put(stockTool.name(), stockTool);
         tools.put(transitTool.name(), transitTool);
         tools.put(poiTool.name(), poiTool);
+        tools.put(gitLabTool.name(), gitLabTool);
     }
 
     /** 按注册顺序返回工具，供规划 prompt 与文档使用 */

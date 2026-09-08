@@ -1,6 +1,42 @@
 <template>
   <div class="app">
-    <ChatHeader :llm="llm" :hasRuns="runs.length > 0" @clear="clearAll()" />
+    <ChatHeader :llm="llm" :hasRuns="runs.length > 0" @clear="clearAll()" @history="openHistory()" />
+
+    <!-- 任务历史抽屉：点击条目即可回放当时的完整执行过程 -->
+    <div v-if="historyOpen" class="drawer-mask" @click.self="historyOpen = false">
+      <aside class="history-drawer" role="dialog" aria-label="任务历史">
+        <div class="hd-head">
+          <h3>任务历史</h3>
+          <div class="hd-actions">
+            <button v-if="history.length" class="hd-clear" type="button" @click="confirmClear">清空历史</button>
+            <button class="hd-close" type="button" aria-label="关闭" @click="historyOpen = false">✕</button>
+          </div>
+        </div>
+        <div class="hd-list">
+          <div v-if="historyLoading" class="hd-empty">加载中…</div>
+          <div v-else-if="!history.length" class="hd-empty">
+            还没有历史任务<br /><small>每次执行都会自动存档，可随时回放</small>
+          </div>
+          <div
+            v-for="h in history"
+            :key="h.id"
+            class="hd-item"
+            role="button"
+            tabindex="0"
+            @click="replay(h.id)"
+            @keydown.enter="replay(h.id)"
+          >
+            <div class="hd-cmd">{{ h.command }}</div>
+            <div class="hd-sub">
+              <span class="hd-status" :class="h.status">{{ statusText(h.status) }}</span>
+              <span class="hd-time">{{ h.createdAt }}</span>
+              <span v-if="h.summary" class="hd-summary">{{ h.summary }}</span>
+            </div>
+            <button class="hd-del" type="button" aria-label="删除该记录" @click.stop="removeHistory(h.id)">✕</button>
+          </div>
+        </div>
+      </aside>
+    </div>
 
     <main class="chat-main" ref="scrollEl">
       <div class="chat-scroll">
@@ -45,8 +81,36 @@ const examples = ref([])
 const llm = ref({ text: '● 连接中…', cls: '' })
 const scrollEl = ref(null)
 const prefill = ref({ command: '', nonce: 0 })
+const historyOpen = ref(false)
 
-const { runs, busy, runAgent, clearAll } = useAgent()
+const {
+  runs, busy, runAgent, clearAll,
+  replayRun, history, historyLoading, loadHistory, deleteHistoryRun, clearHistoryAll,
+} = useAgent()
+
+async function openHistory() {
+  historyOpen.value = true
+  await loadHistory()
+}
+
+async function replay(id) {
+  historyOpen.value = false
+  await replayRun(id)
+}
+
+function removeHistory(id) {
+  deleteHistoryRun(id)
+}
+
+function confirmClear() {
+  if (window.confirm('确定清空全部任务历史？此操作不可恢复。')) {
+    clearHistoryAll()
+  }
+}
+
+function statusText(s) {
+  return { done: '完成', error: '异常', interrupted: '中断', running: '进行中' }[s] || s
+}
 
 /* 新一轮开始、步骤增加或汇总出现时，滚动到底部跟随最新进展 */
 watch(

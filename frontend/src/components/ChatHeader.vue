@@ -14,6 +14,12 @@
       </div>
       <div class="header-tools">
         <span class="llm-badge" :class="llm.cls">{{ llm.text }}</span>
+        <button class="clear-btn history-btn" type="button" @click="$emit('history')">
+          <svg viewBox="0 0 20 20" width="13" height="13" fill="none" aria-hidden="true" style="vertical-align:-2px;margin-right:3px">
+            <path d="M10 4v5l3.5 2" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+            <circle cx="10" cy="10" r="7.2" stroke="currentColor" stroke-width="1.8"/>
+          </svg>历史
+        </button>
         <button v-if="hasRuns" class="clear-btn" type="button" @click="$emit('clear')">清空对话</button>
       </div>
     </div>
@@ -25,5 +31,5 @@ defineProps({
   llm: { type: Object, required: true },
   hasRuns: { type: Boolean, default: false },
 })
-defineEmits(['clear'])
+defineEmits(['clear', 'history'])
 </script>

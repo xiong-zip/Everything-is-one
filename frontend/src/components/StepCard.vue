@@ -20,10 +20,29 @@
             <span class="tc-args">({{ argsText(t.args) }})</span>
           </div>
           <div v-if="step.reasons.length" class="reasoning">
-            <div v-for="(r, i) in step.reasons" :key="'r' + i" class="reason-line">
-              <span class="bullet">▸</span>
-              <span>{{ r.shown }}</span>
-            </div>
+            <!-- 已完成且未展开：只显示结论行 + 展开入口 -->
+            <template v-if="step.state === 'done' && !step.reasonExpanded">
+              <div class="reason-line reason-conclusion">
+                <span class="bullet">▸</span>
+                <span class="txt">{{ lastReason }}</span>
+                <button class="reason-toggle" type="button" @click="step.reasonExpanded = true">
+                  思考过程（{{ step.reasons.length }} 条）<span aria-hidden="true">▾</span>
+                </button>
+              </div>
+            </template>
+            <!-- 执行中或已展开：显示全部推理行 -->
+            <template v-else>
+              <div v-for="(r, i) in step.reasons" :key="'r' + i" class="reason-line">
+                <span class="bullet">▸</span>
+                <span class="txt">{{ r.shown }}</span>
+              </div>
+              <button
+                v-if="step.state === 'done'"
+                class="reason-toggle reason-toggle-inline"
+                type="button"
+                @click="step.reasonExpanded = false"
+              >收起思考过程 <span aria-hidden="true">▴</span></button>
+            </template>
           </div>
           <ResultCard v-if="step.result" :result="step.result" />
         </div>
@@ -47,6 +66,11 @@ const icon = computed(() =>
 const stateText = computed(() =>
   props.step.state === 'running' ? '执行中' : props.step.state === 'done' ? '完成' : '等待中'
 )
+
+const lastReason = computed(() => {
+  const rs = props.step.reasons
+  return rs.length ? rs[rs.length - 1].shown : ''
+})
 
 function argsText(args) {
   if (args == null) return ''

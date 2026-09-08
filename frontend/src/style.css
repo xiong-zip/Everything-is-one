@@ -336,6 +336,36 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 .reasoning { margin-top: 11px; display: flex; flex-direction: column; gap: 4px; }
 .reason-line { display: flex; gap: 8px; font-size: 13px; color: var(--ink-2); }
 .reason-line .bullet { color: var(--mint-500); flex-shrink: 0; font-family: var(--font-mono); }
+.reason-line .txt { flex: 1; min-width: 0; }
+
+/* 思考完成后的折叠态：结论行 + 展开/收起 */
+.reason-conclusion { align-items: baseline; }
+.reason-conclusion .txt {
+  color: var(--ink-1);
+  font-weight: 600;
+  overflow: hidden; text-overflow: ellipsis;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+}
+.reason-toggle {
+  flex-shrink: 0;
+  font-size: 11.5px; font-weight: 600; color: var(--mint-700);
+  background: var(--mint-50); border: 1px solid var(--mint-200);
+  border-radius: 999px; padding: 2px 10px; cursor: pointer;
+  transition: all 0.2s;
+  align-self: flex-start;
+  margin-left: 4px;
+}
+.reason-toggle:hover { background: var(--mint-100); }
+.reason-toggle-inline { margin-top: 6px; margin-left: 18px; }
+
+/* 执行过程整块折叠开关：完成后默认收起 */
+.process-toggle {
+  font-size: 12px; font-weight: 600; color: var(--mint-700);
+  background: var(--mint-50); border: 1px solid var(--mint-200);
+  border-radius: 999px; padding: 4px 14px; cursor: pointer;
+  transition: all 0.2s; margin-bottom: 12px;
+}
+.process-toggle:hover { background: var(--mint-100); }
 
 /* 结果卡 */
 .step-result { margin-top: 13px; animation: fade-up 0.4s var(--ease-out) both; }
@@ -524,6 +554,95 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
   background: var(--mint-50);
 }
 .composer-hint { font-size: 11.5px; color: var(--ink-3); }
+
+/* ---------- 历史抽屉 ---------- */
+.drawer-mask {
+  position: fixed; inset: 0; z-index: 60;
+  background: rgba(18, 63, 54, 0.28);
+  backdrop-filter: blur(2px);
+  animation: fade-in 0.18s ease-out;
+}
+.history-drawer {
+  position: absolute; top: 0; right: 0; bottom: 0;
+  width: min(400px, 92vw);
+  background: var(--card);
+  box-shadow: -12px 0 40px rgba(18, 63, 54, 0.16);
+  display: flex; flex-direction: column;
+  animation: drawer-in 0.24s var(--ease-out);
+}
+@keyframes drawer-in {
+  from { transform: translateX(40px); opacity: 0; }
+  to { transform: none; opacity: 1; }
+}
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.hd-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 16px 18px 12px; border-bottom: 1px solid var(--line);
+}
+.hd-head h3 { margin: 0; font-size: 15px; color: var(--ink-1); }
+.hd-actions { display: flex; gap: 8px; align-items: center; }
+.hd-clear, .hd-close {
+  border: none; background: none; cursor: pointer;
+  font-size: 12px; color: var(--ink-3); padding: 4px 6px; border-radius: 8px;
+}
+.hd-clear:hover { color: var(--rose); background: var(--rose-soft); }
+.hd-close:hover { color: var(--ink-1); background: var(--bg-soft); }
+.hd-list { flex: 1; overflow-y: auto; padding: 10px 12px; }
+.hd-empty {
+  text-align: center; color: var(--ink-3); font-size: 13px;
+  padding: 40px 10px; line-height: 1.9;
+}
+.hd-empty small { font-size: 11.5px; opacity: 0.8; }
+.hd-item {
+  position: relative;
+  border: 1px solid var(--line); border-radius: var(--radius-sm);
+  padding: 10px 30px 10px 12px; margin-bottom: 8px;
+  cursor: pointer; background: var(--card);
+  transition: border-color 0.15s, background 0.15s, transform 0.15s;
+}
+.hd-item:hover { border-color: var(--mint-200); background: var(--mint-50); transform: translateX(-2px); }
+.hd-cmd {
+  font-size: 13px; color: var(--ink-1); font-weight: 500;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.hd-sub {
+  display: flex; gap: 8px; align-items: center; margin-top: 6px;
+  font-size: 11px; color: var(--ink-3); flex-wrap: wrap;
+}
+.hd-summary { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 180px; }
+.hd-status {
+  padding: 1px 8px; border-radius: 999px; border: 1px solid var(--line); background: var(--bg-soft);
+}
+.hd-status.done { color: var(--mint-700); border-color: var(--mint-200); background: var(--mint-50); }
+.hd-status.error, .hd-status.interrupted { color: var(--rose); border-color: #fbd5dd; background: var(--rose-soft); }
+.hd-del {
+  position: absolute; right: 8px; top: 10px;
+  border: none; background: none; cursor: pointer;
+  color: var(--ink-3); font-size: 11px; padding: 3px 5px; border-radius: 6px;
+  opacity: 0; transition: opacity 0.15s;
+}
+.hd-item:hover .hd-del { opacity: 1; }
+.hd-del:hover { color: var(--rose); background: var(--rose-soft); }
+
+/* ---------- 回放标识 & 流式光标 ---------- */
+.replay-badge {
+  font-size: 10.5px; color: var(--sky);
+  border: 1px solid #cbe9f8; background: var(--sky-soft);
+  border-radius: 999px; padding: 1px 8px;
+}
+.stream-cursor {
+  display: inline-block; width: 7px; height: 14px;
+  margin-left: 2px; vertical-align: -2px;
+  background: var(--mint-500); border-radius: 1.5px;
+  animation: cursor-blink 0.9s steps(1) infinite;
+}
+@keyframes cursor-blink {
+  0%, 55% { opacity: 1; }
+  56%, 100% { opacity: 0; }
+}
 
 /* ---------- 动画 ---------- */
 @keyframes fade-up {

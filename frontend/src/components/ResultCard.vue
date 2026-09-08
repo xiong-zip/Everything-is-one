@@ -54,11 +54,15 @@
         </div>
       </div>
 
-      <!-- 文案版本 -->
+      <!-- 文案版本（_streaming：write 步正在流式生成，带光标） -->
       <div v-else-if="result.type === 'copy'" class="copy-list">
         <div v-for="(v, i) in r.versions || []" :key="i" class="copy-item">
           <span class="tag">{{ v.tag }}</span>
-          <span class="txt">{{ v.text }}</span>
+          <span class="txt">{{ v.text }}<span
+            v-if="result._streaming && i === (r.versions || []).length - 1"
+            class="stream-cursor"
+            aria-hidden="true"
+          ></span></span>
         </div>
       </div>
 

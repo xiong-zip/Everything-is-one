@@ -1,20 +1,23 @@
-/* Agent 执行引擎（前端）：多轮对话历史 + SSE 流式消费
-   每一轮 run = { id, command, status, intent, phases, steps, final } */
+/* Agent 执行引擎（前端）：多轮对话历史 + SSE 流式消费 + 历史回放
+   每一轮 run = { id, command, replayed, status, intent, phases, steps, final } */
 import { reactive, ref } from 'vue'
 
 const API_BASE = '/api/agent'
+const HISTORY_TURNS = 5
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const reduceMotion = () => window.matchMedia('(prefers-reduced-motion: reduce)').matches
 
-function newRun(id, command) {
+function newRun(id, command, replayed = false) {
   return {
     id,
     command,
-    status: { text: '正在连接后端…', cls: 'is-running' },
+    replayed,
+    status: { text: replayed ? '读取历史记录…' : '正在连接后端…', cls: replayed ? 'is-done' : 'is-running' },
     intent: null, // { summary, entities: [] }
     phases: { understand: '', plan: '', execute: '', merge: '' },
     steps: [],
+    processExpanded: true, // 执行过程折叠态：完成后默认收起
     final: { visible: false, summary: '', output: '', meta: [] },
   }
 }
@@ -22,7 +25,8 @@ function newRun(id, command) {
 export function useAgent() {
   const runs = ref([])
   const busy = ref(false)
-  let current = null
+  const history = ref([])
+  const historyLoading = ref(false)
   let runSeq = 0
 
   async function typeInto(target, text, chunk = 2) {
@@ -30,14 +34,17 @@ export function useAgent() {
       target.shown = text
       return
     }
-    for (let i = 0; i < text.length; i += chunk) {
-      target.shown = text.slice(0, i + chunk)
+    // 长行自适应加大步长，单行打字时间收敛在 ~0.6s
+    const step = Math.max(2, Math.ceil(text.length / 42))
+    for (let i = 0; i < text.length; i += step) {
+      target.shown = text.slice(0, i + step)
       await sleep(14)
     }
     target.shown = text
   }
 
-  function handlersFor(run) {
+  /* instant=true 时不做打字动画，用于历史回放 */
+  function handlersFor(run, instant = false) {
     return {
       status(d) {
         run.status.text = d.text
@@ -58,12 +65,18 @@ export function useAgent() {
           state: 'pending',
           tools: [],
           reasons: [],
+          reasonExpanded: true,
           result: null,
         }
       },
       'step-state'(d) {
         const st = run.steps[d.index]
-        if (st) st.state = d.state
+        if (!st) return
+        st.state = d.state
+        // 思考步完成后默认折叠推理过程，只保留结论行，可手动展开
+        if (d.state === 'done' && st.kind === 'think' && st.reasons.length) {
+          st.reasonExpanded = false
+        }
       },
       tool(d) {
         const st = run.steps[d.index]
@@ -72,9 +85,24 @@ export function useAgent() {
       async reason(d) {
         const st = run.steps[d.index]
         if (!st) return
-        const line = { shown: '' }
+        const line = { shown: instant ? d.line : '' }
         st.reasons.push(line)
+        if (instant) return
         await typeInto(line, d.line)
+      },
+      /* write 步流式增量：先建一个持续增长的 copy 结果，收尾由 result 事件整体覆盖 */
+      'result-delta'(d) {
+        const st = run.steps[d.index]
+        if (!st) return
+        if (!st.result || !st.result._streaming) {
+          st.result = {
+            type: 'copy',
+            data: { versions: [{ tag: 'AI 生成', text: '' }] },
+            list: [],
+            _streaming: true,
+          }
+        }
+        st.result.data.versions[0].text += d.delta
       },
       result(d) {
         const st = run.steps[d.index]
@@ -85,6 +113,8 @@ export function useAgent() {
         run.final.output = d.output
         run.final.meta = d.meta || []
         run.final.visible = true
+        // 任务已交付，执行过程默认折叠，只展示任务汇总
+        run.processExpanded = false
       },
     }
   }
@@ -131,14 +161,19 @@ export function useAgent() {
     busy.value = true
     const run = reactive(newRun(++runSeq, command))
     runs.value.push(run)
-    current = run
     const handlers = handlersFor(run)
+
+    // 多轮上下文：携带最近几轮的指令与产出，支持“把刚才的结果做成表格”类追问
+    const turns = runs.value
+      .filter((r) => r !== run && r.final && r.final.output)
+      .slice(-HISTORY_TURNS)
+      .map((r) => ({ command: r.command, output: r.final.output }))
 
     try {
       const res = await fetch(`${API_BASE}/run`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ command }),
+        body: JSON.stringify({ command, history: turns }),
       })
       if (!res.ok) throw new Error('创建任务失败')
       const data = await res.json()
@@ -149,13 +184,59 @@ export function useAgent() {
       }
     } finally {
       busy.value = false
-      current = null
     }
+  }
+
+  /* ---------- 历史回放：存量事件走同一套渲染管线，瞬时呈现 ---------- */
+  async function replayRun(id) {
+    try {
+      const res = await fetch(`${API_BASE}/history/${id}`)
+      if (!res.ok) return
+      const data = await res.json()
+      const run = reactive(newRun(++runSeq, data.command, true))
+      runs.value.push(run)
+      const handlers = handlersFor(run, true)
+      for (const e of data.events || []) {
+        dispatch(handlers, e.event, e.data)
+      }
+      run.status = { text: '历史回放 · ' + (data.createdAt || ''), cls: 'is-done' }
+    } catch {
+      /* 历史不可用时静默 */
+    }
+  }
+
+  async function loadHistory() {
+    historyLoading.value = true
+    try {
+      const res = await fetch(`${API_BASE}/history`)
+      if (res.ok) history.value = await res.json()
+    } catch {
+      /* 静默降级 */
+    } finally {
+      historyLoading.value = false
+    }
+  }
+
+  async function deleteHistoryRun(id) {
+    history.value = history.value.filter((h) => h.id !== id)
+    try {
+      await fetch(`${API_BASE}/history/${id}`, { method: 'DELETE' })
+    } catch { /* 静默 */ }
+  }
+
+  async function clearHistoryAll() {
+    history.value = []
+    try {
+      await fetch(`${API_BASE}/history`, { method: 'DELETE' })
+    } catch { /* 静默 */ }
   }
 
   function clearAll() {
     runs.value = []
   }
 
-  return { runs, busy, runAgent, clearAll }
+  return {
+    runs, busy, runAgent, clearAll,
+    replayRun, history, historyLoading, loadHistory, deleteHistoryRun, clearHistoryAll,
+  }
 }

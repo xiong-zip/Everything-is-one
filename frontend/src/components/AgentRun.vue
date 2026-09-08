@@ -3,32 +3,46 @@
     <div class="agent-bar">
       <span class="agent-avatar" aria-hidden="true">✦</span>
       <span class="agent-name">Agent 执行</span>
+      <span v-if="run.replayed" class="replay-badge">历史回放</span>
       <span class="agent-status" :class="run.status.cls" role="status" aria-live="polite">● {{ run.status.text }}</span>
     </div>
 
     <div class="agent-body">
-      <!-- 意图分析 -->
-      <div v-if="run.intent" class="intent-box">
-        <span class="intent-label">意图</span>
-        <span class="intent-summary">{{ run.intent.summary }}</span>
-        <span v-for="(e, i) in run.intent.entities" :key="i" class="entity-chip">{{ e }}</span>
-      </div>
+      <!-- 执行过程：运行中完整展示，完成后默认折叠只留任务汇总，可点开回看 -->
+      <button
+        v-if="run.final.visible"
+        class="process-toggle"
+        type="button"
+        :aria-expanded="run.processExpanded ? 'true' : 'false'"
+        @click="run.processExpanded = !run.processExpanded"
+      >
+        {{ run.processExpanded ? '▾' : '▸' }} 执行过程 · {{ visibleSteps.length }} 个子任务
+      </button>
 
-      <!-- 阶段进度 -->
-      <div class="phases" aria-label="执行阶段">
-        <template v-for="(name, key, i) in phaseList" :key="key">
-          <div class="phase" :class="run.phases[key]">
-            <span class="phase-dot" aria-hidden="true"></span>
-            <span>{{ name }}</span>
-          </div>
-          <span v-if="i < 3" class="phase-arrow" aria-hidden="true">→</span>
-        </template>
-      </div>
+      <div v-show="!run.final.visible || run.processExpanded" class="process-block">
+        <!-- 意图分析 -->
+        <div v-if="run.intent" class="intent-box">
+          <span class="intent-label">意图</span>
+          <span class="intent-summary">{{ run.intent.summary }}</span>
+          <span v-for="(e, i) in run.intent.entities" :key="i" class="entity-chip">{{ e }}</span>
+        </div>
 
-      <!-- 步骤时间线 -->
-      <ol class="timeline">
-        <StepCard v-for="s in visibleSteps" :key="s.index" :step="s" />
-      </ol>
+        <!-- 阶段进度 -->
+        <div class="phases" aria-label="执行阶段">
+          <template v-for="(name, key, i) in phaseList" :key="key">
+            <div class="phase" :class="run.phases[key]">
+              <span class="phase-dot" aria-hidden="true"></span>
+              <span>{{ name }}</span>
+            </div>
+            <span v-if="i < 3" class="phase-arrow" aria-hidden="true">→</span>
+          </template>
+        </div>
+
+        <!-- 步骤时间线 -->
+        <ol class="timeline">
+          <StepCard v-for="s in visibleSteps" :key="s.index" :step="s" />
+        </ol>
+      </div>
 
       <!-- 最终答案 -->
       <div class="final-panel" v-if="run.final.visible">
