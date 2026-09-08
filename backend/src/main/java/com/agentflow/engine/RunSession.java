@@ -23,6 +23,7 @@ public class RunSession {
     private final AtomicBoolean cancelled = new AtomicBoolean(false);
     private final AtomicBoolean started = new AtomicBoolean(false);
     private final AtomicBoolean finished = new AtomicBoolean(false);
+    private final boolean confirmMode;
 
     /** 当前订阅连接（0 或 1 个）；attach/detach 与事件推送共用 session 锁保证不重不漏 */
     private volatile SseEmitter emitter;
@@ -30,11 +31,12 @@ public class RunSession {
     /** 计划放行（confirm 模式）：规划完成后等待用户确认或修改计划 */
     private CompletableFuture<List<PlanStep>> confirmFuture;
 
-    RunSession(String taskId, long runId, String command, List<Map<String, String>> history) {
+    RunSession(String taskId, long runId, String command, List<Map<String, String>> history, boolean confirmMode) {
         this.taskId = taskId;
         this.runId = runId;
         this.command = command;
         this.history = history;
+        this.confirmMode = confirmMode;
     }
 
     String taskId() {
@@ -51,6 +53,10 @@ public class RunSession {
 
     List<Map<String, String>> history() {
         return history;
+    }
+
+    boolean isConfirmMode() {
+        return confirmMode;
     }
 
     SseEmitter emitter() {

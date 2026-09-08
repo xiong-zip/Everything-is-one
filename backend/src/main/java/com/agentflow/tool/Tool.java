@@ -18,4 +18,9 @@ public interface Tool {
     String argsHint();
 
     ToolResult execute(Map<String, Object> args, String userCommand);
+
+    /** 写操作/有副作用的工具返回 true：引擎强制进入人工确认流程后才执行 */
+    default boolean requiresConfirm() {
+        return false;
+    }
 }

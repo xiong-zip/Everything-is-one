@@ -27,6 +27,14 @@
           <span v-for="(e, i) in run.intent.entities" :key="i" class="entity-chip">{{ e }}</span>
         </div>
 
+        <!-- 计划确认卡（confirm 模式 / 写操作强制放行） -->
+        <PlanApproval
+          v-if="run.planProposal"
+          :proposal="run.planProposal"
+          @confirm="(steps) => $emit('plan-confirm', { run, steps })"
+          @cancel-run="$emit('plan-cancel', run)"
+        />
+
         <!-- 阶段进度 -->
         <div class="phases" aria-label="执行阶段">
           <template v-for="(name, key, i) in phaseList" :key="key">
@@ -73,10 +81,12 @@
 <script setup>
 import { computed, ref } from 'vue'
 import StepCard from './StepCard.vue'
+import PlanApproval from './PlanApproval.vue'
 
 const props = defineProps({
   run: { type: Object, required: true },
 })
+defineEmits(['plan-confirm', 'plan-cancel'])
 
 const phaseList = { understand: '意图分析', plan: '任务规划', execute: '逐步执行', merge: '结果汇总' }
 const visibleSteps = computed(() => props.run.steps.filter(Boolean))

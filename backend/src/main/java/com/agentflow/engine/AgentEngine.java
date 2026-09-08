@@ -4,6 +4,7 @@ import com.agentflow.llm.LlmClient;
 import com.agentflow.model.PlanStep;
 import com.agentflow.model.ToolCall;
 import com.agentflow.tool.StockTool;
+import com.agentflow.tool.Tool;
 import com.agentflow.tool.ToolRegistry;
 import com.agentflow.tool.ToolResult;
 import com.agentflow.tool.WeatherTool;
@@ -22,9 +23,14 @@ import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
 import java.util.UUID;
+import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -41,6 +47,12 @@ public class AgentEngine {
     private static final int MAX_HISTORY_TURNS = 5;
     private static final int STREAM_FLUSH_CHARS = 16;
     private static final int MAX_SESSIONS = 500;
+    /** confirm 模式等待用户确认计划的最长时间 */
+    private static final long CONFIRM_TIMEOUT_MIN = 10;
+    /** ReAct 自主循环的步数上限 */
+    private static final int MAX_REACT_STEPS = 8;
+    /** 同一并行分组内的最大并发数 */
+    private static final int MAX_PARALLEL = 3;
 
     private static final String INTENT_SYSTEM =
             "你是 AgentFlow 的意图分析模块。分析用户指令，输出一个 JSON 对象：" +
@@ -51,14 +63,25 @@ public class AgentEngine {
     private static final String PLAN_SYSTEM_TEMPLATE =
             "你是 AgentFlow 的任务规划器。请把用户指令拆解成 2~5 个有序、可执行的子任务，输出 JSON 对象：" +
             "{\"steps\": [{\"kind\": \"tool|think|write\", \"tag\": \"简短类型标签\", \"title\": \"一句话子任务描述\", " +
-            "\"tool\": {\"name\": \"工具名\", \"args\": {参数对象}}}]}\n" +
+            "\"group\": 0, \"tool\": {\"name\": \"工具名\", \"args\": {参数对象}}}]}\n" +
             "规则：\n" +
             "- kind：tool=调用工具取数，think=分析推理，write=生成最终交付内容；tool 字段仅 kind=tool 时给出，否则为 null\n" +
             "- 最后一步一般是 write；需要数据支撑时先安排 tool 步，再 think，最后 write\n" +
             "- args 必须按工具参数说明填写结构化 JSON 对象\n" +
+            "- 相互独立、可并行执行的多个 tool 步使用相同 group（正整数，从 1 开始）；有依赖或不需要并行时 group 为 0\n" +
             "- 指令引用对话历史中的内容时，规划应基于历史产出继续加工而不是重新取数\n" +
             "可用工具：\n%s" +
             "只输出 JSON，不要输出任何多余文字或代码块。";
+
+    private static final String REACT_SYSTEM_TEMPLATE =
+            "你是 AgentFlow 的执行决策模块（ReAct）。根据任务目标与已有执行结果决定下一步动作，只输出一个 JSON 对象：\n" +
+            "{\"action\": \"tool|write|finish\", \"tool\": {\"name\": \"工具名\", \"args\": {}}, \"note\": \"一句话说明这一步做什么\"}\n" +
+            "规则：\n" +
+            "- 需要外部数据才能继续时选 tool，args 按工具参数说明填写\n" +
+            "- 数据已足够支撑交付时选 write（生成最终内容，note 说明交付物方向）\n" +
+            "- 目标已达成、无需再生成时选 finish\n" +
+            "- 禁止与已有动作完全重复的工具调用\n" +
+            "可用工具：\n%s";
 
     private static final String THINK_SYSTEM =
             "你是 AgentFlow 智能体的分析模块。针对当前任务直接输出分析内容本身（不是'如何回答'的内心独白），" +
@@ -85,22 +108,31 @@ public class AgentEngine {
     private final LlmClient llmClient;
     private final RunStore runStore;
     private final String reportDept;
+    private final String agentMode;
     private final ObjectMapper mapper = new ObjectMapper();
     private final ExecutorService executor = Executors.newCachedThreadPool();
     private final ConcurrentHashMap<String, RunSession> sessions = new ConcurrentHashMap<>();
 
     public AgentEngine(ToolRegistry toolRegistry, LlmClient llmClient, RunStore runStore,
-                       @Value("${agentflow.report.department:中台研发部}") String reportDept) {
+                       @Value("${agentflow.report.department:中台研发部}") String reportDept,
+                       @Value("${agentflow.agent.mode:plan}") String agentMode) {
         this.toolRegistry = toolRegistry;
         this.llmClient = llmClient;
         this.runStore = runStore;
         this.reportDept = reportDept == null || reportDept.isBlank() ? "中台研发部" : reportDept.trim();
+        this.agentMode = agentMode == null ? "plan" : agentMode.trim().toLowerCase();
     }
 
-    public String start(String command, List<Map<String, String>> history) {
+    /** ReAct 自主模式：配置开启且 LLM 可用时生效，失败自动回退线性规划 */
+    private boolean reactEnabled() {
+        return "react".equals(agentMode) && llmClient.isEnabled();
+    }
+
+    public String start(String command, List<Map<String, String>> history, String mode) {
         String taskId = UUID.randomUUID().toString();
         long runId = runStore.createRun(taskId, command);
-        sessions.put(taskId, new RunSession(taskId, runId, command, sanitizeHistory(history)));
+        boolean confirm = "confirm".equalsIgnoreCase(mode);
+        sessions.put(taskId, new RunSession(taskId, runId, command, sanitizeHistory(history), confirm));
         return taskId;
     }
 
@@ -156,6 +188,44 @@ public class AgentEngine {
             return false;
         }
         session.cancel();
+        return true;
+    }
+
+    /** 前端确认/编辑后的计划回传；返回 false 表示任务不存在或已结束 */
+    public boolean confirm(String taskId, List<Map<String, Object>> stepDefs) {
+        RunSession session = sessions.get(taskId);
+        if (session == null || session.isFinished()) {
+            return false;
+        }
+        List<PlanStep> steps = new ArrayList<>();
+        if (stepDefs != null) {
+            for (Map<String, Object> d : stepDefs) {
+                if (d == null) {
+                    continue;
+                }
+                String kind = String.valueOf(d.getOrDefault("kind", "tool"));
+                String tag = String.valueOf(d.getOrDefault("tag", kind));
+                String title = String.valueOf(d.getOrDefault("title", "子任务"));
+                int group = 0;
+                try {
+                    group = Integer.parseInt(String.valueOf(d.getOrDefault("group", "0")));
+                } catch (Exception ignored) {
+                }
+                boolean skip = Boolean.parseBoolean(String.valueOf(d.getOrDefault("skip", "false")));
+                ToolCall tool = null;
+                if (d.get("tool") instanceof Map<?, ?> tm && tm.get("name") != null
+                        && !String.valueOf(tm.get("name")).isBlank()) {
+                    Map<String, Object> args = new LinkedHashMap<>();
+                    if (tm.get("args") instanceof Map<?, ?> am) {
+                        am.forEach((k, v) -> args.put(String.valueOf(k), v));
+                    }
+                    tool = new ToolCall(String.valueOf(tm.get("name")), args);
+                }
+                steps.add(new PlanStep(kind, tag, title, tool,
+                        "think".equals(kind) ? List.of() : null, Math.max(0, group), skip));
+            }
+        }
+        session.confirm(steps);
         return true;
     }
 
@@ -244,27 +314,75 @@ public class AgentEngine {
             sleep(180);
             recorder.send("phase", map("name", "understand", "state", "done"));
 
-            /* 阶段二：任务规划（LLM 优先，启发式兜底） */
-            List<PlanStep> steps = plan(command, intent, histBlock);
-            int total = steps.size();
-            recorder.send("status", map("text", "已拆解为 " + total + " 个子任务，开始执行…", "cls", "is-running"));
-            recorder.send("phase", map("name", "plan", "state", "active"));
-            recorder.send("plan", map("total", total));
-            for (int i = 0; i < total; i++) {
-                PlanStep s = steps.get(i);
-                recorder.send("step", map("index", i, "total", total,
-                        "kind", s.kind(), "tag", s.tag(), "title", s.title()));
-                sleep(150);
+            /* 阶段二：任务规划（LLM 优先，启发式兜底）；confirm 模式推送计划等待放行；ReAct 模式跳过预规划 */
+            List<PlanStep> steps = null;
+            int total = 0;
+            if (reactEnabled()) {
+                recorder.send("phase", map("name", "plan", "state", "done"));
+                recorder.send("status", map("text", "ReAct 自主模式 · 逐步决策执行…", "cls", "is-running"));
+            } else {
+                steps = plan(command, intent, histBlock);
+                recorder.send("phase", map("name", "plan", "state", "active"));
+                if (session.isConfirmMode() || requiresConfirm(steps)) {
+                    steps = awaitPlanApproval(recorder, session, steps);
+                }
+                total = steps.size();
+                recorder.send("status", map("text", "已拆解为 " + total + " 个子任务，开始执行…", "cls", "is-running"));
+                for (int i = 0; i < total; i++) {
+                    PlanStep s = steps.get(i);
+                    recorder.send("step", map("index", i, "total", total,
+                            "kind", s.kind(), "tag", s.tag(), "title", s.title()));
+                    sleep(150);
+                }
+                recorder.send("phase", map("name", "plan", "state", "done"));
             }
-            recorder.send("phase", map("name", "plan", "state", "done"));
 
-            /* 阶段三：逐步执行 */
+            /* 阶段三：逐步执行（同 group 的连续 tool 步并行；ReAct 模式逐轮决策） */
             recorder.send("phase", map("name", "execute", "state", "active"));
             Map<String, String> toolResults = new LinkedHashMap<>();
             String writeOutput = null;
-            for (int i = 0; i < total; i++) {
-                checkCancelled(session);
-                writeOutput = executeStep(recorder, session, command, intent, histBlock, steps.get(i), i, toolResults, writeOutput);
+            if (steps == null) {
+                int stepIdx = 0;
+                boolean wrote = false;
+                while (stepIdx < MAX_REACT_STEPS) {
+                    checkCancelled(session);
+                    ReactDecision d = reactDecide(command, histBlock, toolResults);
+                    if (d == null || "finish".equals(d.action())) {
+                        break;
+                    }
+                    boolean isWrite = "write".equals(d.action()) || d.tool() == null;
+                    String title = d.note() == null || d.note().isBlank()
+                            ? (isWrite ? "生成最终交付内容" : "调用工具取数") : d.note();
+                    PlanStep s = isWrite ? PlanStep.write(title) : PlanStep.tool(title, d.tool());
+                    recorder.send("step", map("index", stepIdx, "total", MAX_REACT_STEPS,
+                            "kind", s.kind(), "tag", s.tag(), "title", s.title()));
+                    String out = executeStep(recorder, session, command, intent, histBlock, s, stepIdx, toolResults, writeOutput);
+                    if (isWrite) {
+                        writeOutput = out;
+                        wrote = true;
+                        break;
+                    }
+                    stepIdx++;
+                }
+                if (!wrote && writeOutput == null) {
+                    // 决策循环未产出交付物：兜底补一个 write 步
+                    recorder.send("step", map("index", stepIdx, "total", MAX_REACT_STEPS,
+                            "kind", "write", "tag", "内容生成", "title", "汇总生成最终交付内容"));
+                    writeOutput = executeStep(recorder, session, command, intent, histBlock,
+                            PlanStep.write("汇总生成最终交付内容"), stepIdx, toolResults, writeOutput);
+                }
+                total = Math.max(stepIdx + 1, 1);
+            } else {
+                for (int i = 0; i < steps.size(); ) {
+                    checkCancelled(session);
+                    int j = parallelEnd(steps, i);
+                    if (j - i > 1) {
+                        executeParallel(recorder, session, command, intent, histBlock, steps, i, j, toolResults);
+                    } else {
+                        writeOutput = executeStep(recorder, session, command, intent, histBlock, steps.get(i), i, toolResults, writeOutput);
+                    }
+                    i = j;
+                }
             }
             recorder.send("phase", map("name", "execute", "state", "done"));
 
@@ -388,9 +506,147 @@ public class AgentEngine {
                 tool = new ToolCall(t.path("name").asText(), args);
             }
             List<String> lines = "think".equals(kind) ? List.of() : null;
-            steps.add(new PlanStep(kind, tag, title, tool, lines));
+            int group = Math.max(0, n.path("group").asInt(0));
+            steps.add(new PlanStep(kind, tag, title, tool, lines, group, false));
         }
         return steps;
+    }
+
+    /* ================= 计划放行（Human-in-the-loop） ================= */
+
+    /** 计划中任一工具是写操作时，无论是否开启 confirm 模式都强制人工放行 */
+    private boolean requiresConfirm(List<PlanStep> steps) {
+        for (PlanStep s : steps) {
+            if (s.tool() != null && toolRequiresConfirm(s.tool().name())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean toolRequiresConfirm(String toolName) {
+        Tool t = toolRegistry.get(toolName);
+        return t != null && t.requiresConfirm();
+    }
+
+    /** confirm 模式：把计划推给前端等待确认/编辑，返回过滤 skip 后的有效计划 */
+    private List<PlanStep> awaitPlanApproval(RunRecorder recorder, RunSession session, List<PlanStep> steps) {
+        List<Object> proposal = new ArrayList<>();
+        for (int i = 0; i < steps.size(); i++) {
+            PlanStep s = steps.get(i);
+            Map<String, Object> m = map("index", i, "kind", s.kind(), "tag", s.tag(), "title", s.title(),
+                    "group", s.group(), "skip", false);
+            if (s.tool() != null) {
+                m.put("tool", map("name", s.tool().name(), "args", s.tool().args(),
+                        "requiresConfirm", toolRequiresConfirm(s.tool().name())));
+            }
+            proposal.add(m);
+        }
+        recorder.send("plan-proposal", map("steps", proposal));
+        recorder.send("status", map("text", "等待确认执行计划…", "cls", "is-running"));
+        try {
+            List<PlanStep> confirmed = session.awaitConfirm().get(CONFIRM_TIMEOUT_MIN, TimeUnit.MINUTES);
+            List<PlanStep> effective = new ArrayList<>();
+            for (PlanStep s : confirmed) {
+                if (!s.skip()) {
+                    effective.add(s);
+                }
+            }
+            recorder.send("plan-confirmed", map("total", effective.size()));
+            recorder.send("status", map("text", "计划已确认，开始执行…", "cls", "is-running"));
+            return effective;
+        } catch (TimeoutException ex) {
+            throw new CancelledException();
+        } catch (Exception ex) {
+            // 等待期间被取消或会话结束
+            throw new CancelledException();
+        }
+    }
+
+    /* ================= 并行执行 ================= */
+
+    /** 从 from 开始的区段 Exclusive 结束位置：同 group 的连续 tool 步构成一个并行区段 */
+    private static int parallelEnd(List<PlanStep> steps, int from) {
+        PlanStep first = steps.get(from);
+        if (!"tool".equals(first.kind()) || first.tool() == null || first.group() <= 0) {
+            return from + 1;
+        }
+        int j = from + 1;
+        while (j < steps.size()) {
+            PlanStep s = steps.get(j);
+            if (!"tool".equals(s.kind()) || s.tool() == null || s.group() != first.group()) {
+                break;
+            }
+            j++;
+        }
+        return j;
+    }
+
+    /** 并行执行 [from, to) 的 tool 步：事件按 index 各自推送，结果按顺序合并回主结果表 */
+    private void executeParallel(RunRecorder recorder, RunSession session, String command, Intent intent, String histBlock,
+                                 List<PlanStep> steps, int from, int to, Map<String, String> toolResults) {
+        List<Integer> indexes = new ArrayList<>();
+        for (int k = from; k < to; k++) {
+            indexes.add(k);
+        }
+        for (int start = 0; start < indexes.size(); start += MAX_PARALLEL) {
+            checkCancelled(session);
+            List<Integer> batch = indexes.subList(start, Math.min(start + MAX_PARALLEL, indexes.size()));
+            List<Callable<Map<String, String>>> jobs = new ArrayList<>();
+            for (Integer k : batch) {
+                jobs.add(() -> {
+                    Map<String, String> partial = new LinkedHashMap<>();
+                    executeStep(recorder, session, command, intent, histBlock, steps.get(k), k, partial, null);
+                    return partial;
+                });
+            }
+            try {
+                List<Future<Map<String, String>>> futures = executor.invokeAll(jobs);
+                for (Future<Map<String, String>> f : futures) {
+                    toolResults.putAll(f.get());
+                }
+            } catch (InterruptedException ex) {
+                Thread.currentThread().interrupt();
+                throw new CancelledException();
+            } catch (ExecutionException ex) {
+                if (ex.getCause() instanceof RuntimeException re) {
+                    throw re;
+                }
+                throw new RuntimeException(ex.getCause());
+            }
+        }
+    }
+
+    /* ================= ReAct 自主循环 ================= */
+
+    /** ReAct 单轮决策结果 */
+    private record ReactDecision(String action, ToolCall tool, String note) {
+    }
+
+    /** 问 LLM 决定下一步动作；失败返回 null（由调用方收敛循环） */
+    private ReactDecision reactDecide(String command, String histBlock, Map<String, String> toolResults) {
+        try {
+            String system = String.format(REACT_SYSTEM_TEMPLATE, toolRegistry.describeForPrompt());
+            String content = llmClient.chatJson(system,
+                    "任务目标：" + command + "\n已获得的工具结果：\n" + toolSummary(toolResults) + histBlock
+                            + "\n请决定下一步动作。");
+            JsonNode node = readJsonObject(content);
+            String action = node.path("action").asText("write").toLowerCase();
+            if (action.isBlank()) {
+                action = "write";
+            }
+            ToolCall tool = null;
+            JsonNode t = node.path("tool");
+            if (t.isObject() && !t.path("name").asText("").isBlank()) {
+                Map<String, Object> args = new LinkedHashMap<>();
+                t.path("args").fields().forEachRemaining(e -> args.put(e.getKey(), e.getValue().asText()));
+                tool = new ToolCall(t.path("name").asText(), args);
+            }
+            return new ReactDecision(action, tool, node.path("note").asText(""));
+        } catch (Exception ex) {
+            log.warn("ReAct 决策失败: {}", ex.getMessage());
+            return null;
+        }
     }
 
     /** 通用启发式拆解：任何指令都能得到合理计划 */

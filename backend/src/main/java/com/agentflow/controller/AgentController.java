@@ -3,6 +3,7 @@ package com.agentflow.controller;
 import com.agentflow.engine.AgentEngine;
 import com.agentflow.engine.RunStore;
 import com.agentflow.llm.LlmClient;
+import com.agentflow.model.PlanConfirmRequest;
 import com.agentflow.model.RunRequest;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -47,8 +48,18 @@ public class AgentController {
         if (request == null || request.command() == null || request.command().isBlank()) {
             throw new IllegalArgumentException("command 不能为空");
         }
-        String taskId = engine.start(request.command().trim(), request.history());
+        String taskId = engine.start(request.command().trim(), request.history(), request.mode());
         return Map.of("taskId", taskId);
+    }
+
+    /** confirm 模式：前端确认/编辑后的计划回传，引擎继续执行 */
+    @PostMapping("/run/{taskId}/confirm")
+    public Map<String, String> confirm(@PathVariable("taskId") String taskId,
+                                       @RequestBody PlanConfirmRequest request) {
+        if (!engine.confirm(taskId, request == null ? null : request.steps())) {
+            throw new IllegalArgumentException("任务不存在或已结束");
+        }
+        return Map.of("ok", "confirmed");
     }
 
     /** afterSeq：调用方已收到的最大事件序号，断线重连时只补发缺失部分；-1（默认）从头补发 */

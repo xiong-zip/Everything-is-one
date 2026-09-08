@@ -1,6 +1,6 @@
 <template>
   <div class="app">
-    <ChatHeader :llm="llm" :hasRuns="runs.length > 0" @clear="clearAll()" @history="openHistory()" />
+    <ChatHeader :llm="llm" :hasRuns="runs.length > 0" :confirmMode="confirmMode" @clear="clearAll()" @history="openHistory()" @toggle-confirm="confirmMode = !confirmMode" />
 
     <!-- 任务历史抽屉：点击条目即可回放当时的完整执行过程 -->
     <div v-if="historyOpen" class="drawer-mask" @click.self="historyOpen = false">
@@ -59,7 +59,7 @@
           <div class="user-bubble-row">
             <div class="user-bubble">{{ run.command }}</div>
           </div>
-          <AgentRun :run="run" />
+          <AgentRun :run="run" @plan-confirm="onPlanConfirm" @plan-cancel="onPlanCancel" />
         </div>
       </div>
     </main>
@@ -84,9 +84,17 @@ const prefill = ref({ command: '', nonce: 0 })
 const historyOpen = ref(false)
 
 const {
-  runs, busy, runAgent, stopRun, clearAll,
+  runs, busy, runAgent, stopRun, clearAll, confirmMode, confirmPlan,
   replayRun, history, historyLoading, loadHistory, deleteHistoryRun, clearHistoryAll,
 } = useAgent()
+
+function onPlanConfirm({ run, steps }) {
+  confirmPlan(run, steps)
+}
+
+function onPlanCancel() {
+  stopRun()
+}
 
 async function openHistory() {
   historyOpen.value = true

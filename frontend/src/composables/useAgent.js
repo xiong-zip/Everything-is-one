@@ -1,6 +1,6 @@
 /* Agent 执行引擎（前端）：多轮对话历史 + SSE 流式消费 + 历史回放
    每一轮 run = { id, command, replayed, status, intent, phases, steps, final } */
-import { reactive, ref } from 'vue'
+import { reactive, ref, watch } from 'vue'
 
 const API_BASE = '/api/agent'
 const HISTORY_TURNS = 5
@@ -8,17 +8,29 @@ const HISTORY_TURNS = 5
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const reduceMotion = () => window.matchMedia('(prefers-reduced-motion: reduce)').matches
 
+/* 唤醒正在等待计划确认的 runAgent 循环（确认到达 / 用户取消） */
+function resolveConfirm(run) {
+  if (run.confirmResolve) {
+    const r = run.confirmResolve
+    run.confirmResolve = null
+    r()
+  }
+}
+
 function newRun(id, command, replayed = false) {
   return {
     id,
     command,
     replayed,
+    taskId: null, // 后端任务 id（confirm 取消/确认用）
     lastSeq: -1, // 已收到的最大事件序号，断线重连时从这之后补发
     stopped: false, // 用户主动停止（与连接异常区分）
     status: { text: replayed ? '读取历史记录…' : '正在连接后端…', cls: replayed ? 'is-done' : 'is-running' },
     intent: null, // { summary, entities: [] }
     phases: { understand: '', plan: '', execute: '', merge: '' },
     steps: [],
+    planProposal: null, // confirm 模式：{ steps, waiting, confirmed }
+    confirmResolve: null, // 等待用户确认计划的 Promise resolver
     processExpanded: true, // 执行过程折叠态：完成后默认收起
     final: { visible: false, summary: '', output: '', meta: [] },
   }
@@ -29,6 +41,9 @@ export function useAgent() {
   const busy = ref(false)
   const history = ref([])
   const historyLoading = ref(false)
+  // 确认模式：任务规划后先推送计划，用户确认/编辑再执行（本地记忆开关）
+  const confirmMode = ref(localStorage.getItem('af-confirm-mode') === '1')
+  watch(confirmMode, (v) => localStorage.setItem('af-confirm-mode', v ? '1' : '0'))
   let runSeq = 0
   let activeTaskId = null
   let activeAbort = null
@@ -56,6 +71,23 @@ export function useAgent() {
       },
       phase(d) {
         run.phases[d.name] = d.state
+      },
+      /* confirm 模式：计划提案，等待用户确认/编辑；argsJson 供计划卡内编辑工具参数 */
+      'plan-proposal'(d) {
+        const steps = (d.steps || []).map((s) => ({
+          ...s,
+          skip: false,
+          argsJson: s.tool ? JSON.stringify(s.tool.args || {}, null, 2) : null,
+        }))
+        run.planProposal = { steps, waiting: true, confirmed: false }
+      },
+      'plan-confirmed'(d) {
+        if (run.planProposal) {
+          run.planProposal.waiting = false
+          run.planProposal.confirmed = true
+          run.planProposal.skipped = run.planProposal.steps.filter((s) => s.skip).length
+        }
+        resolveConfirm(run)
       },
       intent(d) {
         run.intent = { summary: d.summary || '', entities: d.entities || [] }
@@ -197,12 +229,18 @@ export function useAgent() {
       const res = await fetch(`${API_BASE}/run`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ command, history: turns }),
+        body: JSON.stringify({ command, history: turns, mode: confirmMode.value ? 'confirm' : 'auto' }),
       })
       if (!res.ok) throw new Error('创建任务失败')
       const data = await res.json()
       activeTaskId = data.taskId
+      run.taskId = data.taskId
       await consumeWithResume(handlers, data.taskId, run)
+      // confirm 模式：等待确认期间服务端可能已收断连接，确认后重连续读余下事件
+      while (run.planProposal && run.planProposal.waiting && !run.stopped && !run.final.visible) {
+        await new Promise((resolve) => { run.confirmResolve = resolve })
+        await consumeWithResume(handlers, data.taskId, run)
+      }
     } catch (err) {
       if (!run.final.visible) {
         handlers.status(run.stopped
@@ -220,11 +258,26 @@ export function useAgent() {
   async function stopRun() {
     if (!activeTaskId) return
     const run = runs.value[runs.value.length - 1]
-    if (run) run.stopped = true
+    if (run) {
+      run.stopped = true
+      resolveConfirm(run)
+    }
     try {
       await fetch(`${API_BASE}/cancel/${activeTaskId}`, { method: 'POST' })
     } catch { /* 后端不可达时仅本地中止 */ }
     if (activeAbort) activeAbort.abort()
+  }
+
+  /* ---------- confirm 模式：回传确认/编辑后的计划 ---------- */
+  async function confirmPlan(run, steps) {
+    if (!run || !run.taskId) return
+    try {
+      await fetch(`${API_BASE}/run/${run.taskId}/confirm`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ steps }),
+      })
+    } catch { /* 确认请求失败：保持等待态，用户可重试或取消 */ }
   }
 
   /* ---------- 历史回放：存量事件走同一套渲染管线，瞬时呈现 ---------- */
@@ -238,6 +291,10 @@ export function useAgent() {
       const handlers = handlersFor(run, true)
       for (const e of data.events || []) {
         dispatch(handlers, e.event, e.data)
+      }
+      // 回放中未等到确认结果的计划卡不再显示等待态
+      if (run.planProposal && run.planProposal.waiting) {
+        run.planProposal.waiting = false
       }
       run.status = { text: '历史回放 · ' + (data.createdAt || ''), cls: 'is-done' }
     } catch {
@@ -276,7 +333,7 @@ export function useAgent() {
   }
 
   return {
-    runs, busy, runAgent, stopRun, clearAll,
+    runs, busy, runAgent, stopRun, clearAll, confirmMode, confirmPlan,
     replayRun, history, historyLoading, loadHistory, deleteHistoryRun, clearHistoryAll,
   }
 }

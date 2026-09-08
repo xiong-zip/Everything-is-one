@@ -14,6 +14,13 @@
       </div>
       <div class="header-tools">
         <span class="llm-badge" :class="llm.cls">{{ llm.text }}</span>
+        <button
+          class="clear-btn confirm-toggle"
+          :class="{ on: confirmMode }"
+          type="button"
+          :title="confirmMode ? '确认模式已开启：任务规划后先确认再执行' : '确认模式已关闭：规划后直接执行'"
+          @click="$emit('toggle-confirm')"
+        >{{ confirmMode ? '✓ 确认模式' : '确认模式' }}</button>
         <button class="clear-btn history-btn" type="button" @click="$emit('history')">
           <svg viewBox="0 0 20 20" width="13" height="13" fill="none" aria-hidden="true" style="vertical-align:-2px;margin-right:3px">
             <path d="M10 4v5l3.5 2" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
@@ -30,6 +37,7 @@
 defineProps({
   llm: { type: Object, required: true },
   hasRuns: { type: Boolean, default: false },
+  confirmMode: { type: Boolean, default: false },
 })
-defineEmits(['clear', 'history'])
+defineEmits(['clear', 'history', 'toggle-confirm'])
 </script>

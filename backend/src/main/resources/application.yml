@@ -6,6 +6,9 @@ spring:
     name: agentflow
 
 agentflow:
+  # 执行模式：plan=先整体规划再顺序/并行执行（默认）；react=ReAct 自主循环，逐轮决策下一步动作
+  agent:
+    mode: ${AGENTFLOW_AGENT_MODE:plan}
   llm:
     base-url: https://api.deepseek.com
     api-key: ${DEEPSEEK_API_KEY:}
