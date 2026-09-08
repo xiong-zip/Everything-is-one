@@ -6,6 +6,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 @Component
@@ -63,10 +64,57 @@ public class WeatherTool implements Tool {
     }
 
     @Override
-    public ToolResult execute(String userCommand) {
-        String city = extractCity(userCommand);
-        double[] coord = CITY_COORDS.getOrDefault(city, CITY_COORDS.get("厦门"));
-        Map<String, Object> data = fetchWeather(coord[0], coord[1]);
+    public String name() {
+        return "weather.query";
+    }
+
+    @Override
+    public String description() {
+        return "查询指定城市今日实时天气（真实气象数据）";
+    }
+
+    @Override
+    public String argsHint() {
+        return "{\"city\": \"城市名\"}";
+    }
+
+    /** 从文本中识别已支持的城市，找不到返回 null */
+    public static String findCity(String text) {
+        List<String> all = findCities(text);
+        return all.isEmpty() ? null : all.get(0);
+    }
+
+    /** 从文本中按出现顺序识别全部支持城市（去重） */
+    public static List<String> findCities(String text) {
+        List<String> found = new java.util.ArrayList<>();
+        if (text == null || text.isBlank()) {
+            return found;
+        }
+        for (String c : CITY_COORDS.keySet()) {
+            if (text.contains(c) && !found.contains(c)) {
+                found.add(c);
+            }
+        }
+        return found;
+    }
+
+    @Override
+    public ToolResult execute(Map<String, Object> args, String userCommand) {
+        String city = str(args.get("city"));
+        if (city == null) {
+            city = findCity(userCommand);
+        }
+        if (city == null || !CITY_COORDS.containsKey(city)) {
+            return ToolResult.note("未识别到可查询的城市（当前支持 " + CITY_COORDS.size()
+                    + " 个国内主要城市），可在指令中明确城市名，如「查北京天气」");
+        }
+        double[] coord = CITY_COORDS.get(city);
+        Map<String, Object> data;
+        try {
+            data = fetchWeather(coord[0], coord[1]);
+        } catch (Exception ex) {
+            return ToolResult.note("天气服务暂不可用：" + ex.getMessage());
+        }
         data.put("city", city);
         data.put("date", "今天");
         String summary = city + " " + data.get("condition") + " " + data.get("tempLo") + "~" + data.get("tempHi") + "℃"
@@ -75,41 +123,28 @@ public class WeatherTool implements Tool {
         return new ToolResult("weather", data, null, summary);
     }
 
-    private String extractCity(String command) {
-        for (String c : CITY_COORDS.keySet()) {
-            if (command.contains(c)) {
-                return c;
-            }
-        }
-        return "厦门";
-    }
+    private Map<String, Object> fetchWeather(double lat, double lon) throws Exception {
+        String json = restClient.get()
+                .uri(FORECAST_URL + "?latitude={lat}&longitude={lon}"
+                        + "&current=temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m"
+                        + "&daily=temperature_2m_max,temperature_2m_min,uv_index_max"
+                        + "&timezone={tz}&forecast_days=1",
+                        lat, lon, "Asia/Shanghai")
+                .retrieve()
+                .body(String.class);
+        JsonNode root = mapper.readTree(json);
+        JsonNode current = root.path("current");
+        JsonNode daily = root.path("daily");
 
-    private Map<String, Object> fetchWeather(double lat, double lon) {
-        try {
-            String json = restClient.get()
-                    .uri(FORECAST_URL + "?latitude={lat}&longitude={lon}"
-                            + "&current=temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m"
-                            + "&daily=temperature_2m_max,temperature_2m_min,uv_index_max"
-                            + "&timezone={tz}&forecast_days=1",
-                            lat, lon, "Asia/Shanghai")
-                    .retrieve()
-                    .body(String.class);
-            JsonNode root = mapper.readTree(json);
-            JsonNode current = root.path("current");
-            JsonNode daily = root.path("daily");
-
-            Map<String, Object> r = new LinkedHashMap<>();
-            r.put("condition", wmoToText(current.path("weather_code").asInt()));
-            r.put("tempLo", Math.round(daily.path("temperature_2m_min").path(0).asDouble()));
-            r.put("tempHi", Math.round(daily.path("temperature_2m_max").path(0).asDouble()));
-            r.put("feels", Math.round(current.path("apparent_temperature").asDouble()));
-            r.put("humidity", current.path("relative_humidity_2m").asInt() + "%");
-            r.put("wind", windToText(current.path("wind_speed_10m").asDouble()));
-            r.put("uv", uvToText(daily.path("uv_index_max").path(0).asDouble()));
-            return r;
-        } catch (Exception ex) {
-            throw new IllegalStateException("天气查询失败: " + ex.getMessage(), ex);
-        }
+        Map<String, Object> r = new LinkedHashMap<>();
+        r.put("condition", wmoToText(current.path("weather_code").asInt()));
+        r.put("tempLo", Math.round(daily.path("temperature_2m_min").path(0).asDouble()));
+        r.put("tempHi", Math.round(daily.path("temperature_2m_max").path(0).asDouble()));
+        r.put("feels", Math.round(current.path("apparent_temperature").asDouble()));
+        r.put("humidity", current.path("relative_humidity_2m").asInt() + "%");
+        r.put("wind", windToText(current.path("wind_speed_10m").asDouble()));
+        r.put("uv", uvToText(daily.path("uv_index_max").path(0).asDouble()));
+        return r;
     }
 
     private static String wmoToText(int code) {
@@ -144,5 +179,11 @@ public class WeatherTool implements Tool {
         if (uv < 8) return "强";
         if (uv < 11) return "很强";
         return "极强";
+    }
+
+    private static String str(Object o) {
+        if (o == null) return null;
+        String s = String.valueOf(o).trim();
+        return s.isEmpty() ? null : s;
     }
 }

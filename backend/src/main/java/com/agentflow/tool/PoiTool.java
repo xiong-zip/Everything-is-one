@@ -7,6 +7,7 @@ import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 @Component
 public class PoiTool implements Tool {
@@ -23,17 +24,50 @@ public class PoiTool implements Tool {
     }
 
     @Override
-    public ToolResult execute(String userCommand) {
+    public String name() {
+        return "poi.recommend";
+    }
+
+    @Override
+    public String description() {
+        return "推荐当地特色美食/景点（LLM 生成，需配置 API Key）";
+    }
+
+    @Override
+    public String argsHint() {
+        return "{\"city\": \"城市名\", \"keyword\": \"美食或景点关键词\"}";
+    }
+
+    @Override
+    public ToolResult execute(Map<String, Object> args, String userCommand) {
         if (!llmClient.isEnabled()) {
-            throw new IllegalStateException("未配置 LLM，无法生成美食推荐");
+            return mockResult(args, userCommand);
         }
-        String content = llmClient.chat(SYSTEM, "用户指令：" + userCommand);
-        List<String> list = parseJsonArray(content);
-        if (list.isEmpty()) {
-            throw new IllegalStateException("LLM 返回格式无法解析");
+        try {
+            String content = llmClient.chat(SYSTEM, "用户指令：" + userCommand);
+            List<String> list = parseJsonArray(content);
+            if (list.isEmpty()) {
+                return mockResult(args, userCommand);
+            }
+            String summary = "推荐美食：" + String.join("、", list);
+            return new ToolResult("list", null, list, summary);
+        } catch (Exception ex) {
+            return ToolResult.note("推荐生成失败：" + ex.getMessage());
         }
-        String summary = "推荐美食：" + String.join("、", list);
-        return new ToolResult("list", null, list, summary);
+    }
+
+    /** 无 LLM 时的降级：给出探索方向而非虚构具体店铺，明确标注模拟 */
+    private ToolResult mockResult(Map<String, Object> args, String userCommand) {
+        String text = (userCommand == null ? "" : userCommand) + " " + args.getOrDefault("city", "");
+        String city = WeatherTool.findCity(text);
+        String prefix = city == null ? "目的地" : city;
+        List<String> list = List.of(
+                prefix + " 老字号招牌菜 · 探店方向（模拟）",
+                prefix + " 本地人气小吃街（模拟）",
+                prefix + " 必尝特色早点（模拟）",
+                prefix + " 时令风味菜（模拟）",
+                prefix + " 特色伴手礼（模拟）");
+        return new ToolResult("list", null, list, "模拟推荐方向（未配置 API Key，接入后可生成具体美食清单）");
     }
 
     private List<String> parseJsonArray(String content) {

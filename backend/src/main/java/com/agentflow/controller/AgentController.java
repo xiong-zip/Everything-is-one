@@ -1,7 +1,6 @@
 package com.agentflow.controller;
 
 import com.agentflow.engine.AgentEngine;
-import com.agentflow.engine.ScenarioRegistry;
 import com.agentflow.llm.LlmClient;
 import com.agentflow.model.RunRequest;
 import org.springframework.http.MediaType;
@@ -22,13 +21,18 @@ import java.util.Map;
 @RequestMapping("/api/agent")
 public class AgentController {
 
+    /** 示例建议：仅作输入灵感提示，不限制可执行的指令 */
+    private static final List<Map<String, String>> EXAMPLES = List.of(
+            Map.of("command", "帮我查厦门今天天气，然后生成一段朋友圈文案", "short", "天气 + 朋友圈文案"),
+            Map.of("command", "查一下贵州茅台今天的股价，写一段给领导的周报总结", "short", "股价 + 周报总结"),
+            Map.of("command", "帮我规划周末两天从上海去杭州的行程，顺便推荐当地美食", "short", "行程 + 美食"),
+            Map.of("command", "帮我写一封调休假的请假邮件", "short", "写邮件"));
+
     private final AgentEngine engine;
-    private final ScenarioRegistry registry;
     private final LlmClient llmClient;
 
-    public AgentController(AgentEngine engine, ScenarioRegistry registry, LlmClient llmClient) {
+    public AgentController(AgentEngine engine, LlmClient llmClient) {
         this.engine = engine;
-        this.registry = registry;
         this.llmClient = llmClient;
     }
 
@@ -50,11 +54,10 @@ public class AgentController {
         return emitter;
     }
 
+    /** 示例建议（引擎不限于这些指令，任意自然语言任务均可） */
     @GetMapping("/scenarios")
     public List<Map<String, String>> scenarios() {
-        return registry.all().stream()
-                .map(s -> Map.of("command", s.command(), "short", s.shortName()))
-                .toList();
+        return EXAMPLES;
     }
 
     @GetMapping("/info")

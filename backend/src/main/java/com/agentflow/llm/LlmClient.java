@@ -63,14 +63,23 @@ public class LlmClient {
     }
 
     public String chat(String systemPrompt, String userPrompt) {
-        return call(systemPrompt, userPrompt, false);
+        return call(systemPrompt, userPrompt, false, false);
     }
 
     public String reason(String systemPrompt, String userPrompt) {
-        return call(systemPrompt, userPrompt, true);
+        return call(systemPrompt, userPrompt, true, false);
+    }
+
+    /** 要求模型输出 JSON 对象（DeepSeek 兼容 OpenAI response_format），用于规划/意图抽取 */
+    public String chatJson(String systemPrompt, String userPrompt) {
+        return call(systemPrompt, userPrompt, false, true);
     }
 
     private String call(String systemPrompt, String userPrompt, boolean reasoning) {
+        return call(systemPrompt, userPrompt, reasoning, false);
+    }
+
+    private String call(String systemPrompt, String userPrompt, boolean reasoning, boolean jsonMode) {
         if (!enabled) {
             throw new IllegalStateException("未配置 DeepSeek API Key");
         }
@@ -81,8 +90,11 @@ public class LlmClient {
                 Map.of("role", "system", "content", systemPrompt),
                 Map.of("role", "user", "content", userPrompt)));
         body.put("stream", false);
-        body.put("temperature", reasoning ? 0.6 : 0.9);
+        body.put("temperature", jsonMode ? 0.2 : (reasoning ? 0.6 : 0.9));
         body.put("max_tokens", 2048);
+        if (jsonMode) {
+            body.put("response_format", Map.of("type", "json_object"));
+        }
         if (reasoning) {
             body.put("thinking", Map.of("type", "enabled"));
         }

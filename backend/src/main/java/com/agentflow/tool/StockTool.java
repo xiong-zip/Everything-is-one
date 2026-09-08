@@ -42,9 +42,56 @@ public class StockTool implements Tool {
     }
 
     @Override
-    public ToolResult execute(String userCommand) {
-        String symbol = resolveSymbol(userCommand);
-        Map<String, Object> data = fetchQuote(symbol);
+    public String name() {
+        return "stock.query";
+    }
+
+    @Override
+    public String description() {
+        return "查询 A 股个股实时行情（真实行情数据）";
+    }
+
+    @Override
+    public String argsHint() {
+        return "{\"stock\": \"股票名称或 6 位代码\"}";
+    }
+
+    /** 从文本中识别股票名称（支持 6 位代码），找不到返回 null */
+    public static String findStock(String text) {
+        if (text == null || text.isBlank()) {
+            return null;
+        }
+        Matcher m = Pattern.compile("(\\d{6})").matcher(text);
+        if (m.find()) {
+            return m.group(1);
+        }
+        for (String name : NAME_MAP.keySet()) {
+            if (text.contains(name)) {
+                return name;
+            }
+        }
+        return null;
+    }
+
+    @Override
+    public ToolResult execute(Map<String, Object> args, String userCommand) {
+        String stock = str(args.get("stock"));
+        if (stock == null) {
+            stock = str(args.get("name"));
+        }
+        if (stock == null) {
+            stock = findStock(userCommand);
+        }
+        if (stock == null) {
+            return ToolResult.note("未识别到股票，可在指令中写明名称（如「贵州茅台」）或 6 位代码");
+        }
+        String symbol = resolveSymbol(stock);
+        Map<String, Object> data;
+        try {
+            data = fetchQuote(symbol);
+        } catch (Exception ex) {
+            return ToolResult.note("行情服务暂不可用：" + ex.getMessage());
+        }
         data.put("symbol", symbol.substring(2));
         data.put("trend", String.valueOf(data.get("change")).startsWith("-") ? "down" : "up");
         String summary = data.get("name") + " " + data.get("price") + " 元 " + data.get("change")
@@ -52,44 +99,41 @@ public class StockTool implements Tool {
         return new ToolResult("stock", data, null, summary);
     }
 
-    private String resolveSymbol(String command) {
-        Matcher m = Pattern.compile("(\\d{6})").matcher(command);
-        if (m.find()) {
-            String code = m.group(1);
-            if (code.startsWith("6")) return "sh" + code;
-            if (code.startsWith("4") || code.startsWith("8")) return "bj" + code;
-            return "sz" + code;
+    private String resolveSymbol(String stock) {
+        if (stock.matches("\\d{6}")) {
+            if (stock.startsWith("6")) return "sh" + stock;
+            if (stock.startsWith("4") || stock.startsWith("8")) return "bj" + stock;
+            return "sz" + stock;
         }
-        for (Map.Entry<String, String> e : NAME_MAP.entrySet()) {
-            if (command.contains(e.getKey())) {
-                return e.getValue();
-            }
+        String symbol = NAME_MAP.get(stock);
+        if (symbol != null) {
+            return symbol;
         }
-        return "sz300750";
+        // 名称不在预置表：按常见前缀尝试（沪 6 开头 / 深 0、3 开头无法从名称判断，默认沪）
+        throw new IllegalStateException("暂不支持股票「" + stock + "」，请使用 6 位代码");
     }
 
     private Map<String, Object> fetchQuote(String symbol) {
-        try {
-            byte[] bytes = restClient.get()
-                    .uri(QUOTE_URL + symbol)
-                    .header("Referer", "https://gu.qq.com/")
-                    .retrieve()
-                    .body(byte[].class);
-            String text = new String(bytes, GBK);
-            String payload = text.substring(text.indexOf('"') + 1, text.lastIndexOf('"'));
-            String[] f = payload.split("~");
-
-            Map<String, Object> r = new LinkedHashMap<>();
-            r.put("name", f[1]);
-            r.put("price", f[3]);
-            r.put("open", f[5]);
-            r.put("change", f[32] + "%");
-            r.put("amount", formatAmount(f[37]));
-            r.put("turnover", f[38] + "%");
-            return r;
-        } catch (Exception ex) {
-            throw new IllegalStateException("行情查询失败: " + ex.getMessage(), ex);
+        byte[] bytes = restClient.get()
+                .uri(QUOTE_URL + symbol)
+                .header("Referer", "https://gu.qq.com/")
+                .retrieve()
+                .body(byte[].class);
+        String text = new String(bytes, GBK);
+        String payload = text.substring(text.indexOf('"') + 1, text.lastIndexOf('"'));
+        String[] f = payload.split("~");
+        if (f.length < 39) {
+            throw new IllegalStateException("行情返回格式异常");
         }
+
+        Map<String, Object> r = new LinkedHashMap<>();
+        r.put("name", f[1]);
+        r.put("price", f[3]);
+        r.put("open", f[5]);
+        r.put("change", f[32] + "%");
+        r.put("amount", formatAmount(f[37]));
+        r.put("turnover", f[38] + "%");
+        return r;
     }
 
     private static String formatAmount(String wan) {
@@ -102,5 +146,11 @@ public class StockTool implements Tool {
         } catch (NumberFormatException e) {
             return wan + " 万";
         }
+    }
+
+    private static String str(Object o) {
+        if (o == null) return null;
+        String s = String.valueOf(o).trim();
+        return s.isEmpty() ? null : s;
     }
 }

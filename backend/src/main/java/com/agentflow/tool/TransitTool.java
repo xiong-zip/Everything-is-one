@@ -23,17 +23,51 @@ public class TransitTool implements Tool {
     }
 
     @Override
-    public ToolResult execute(String userCommand) {
+    public String name() {
+        return "transit.query";
+    }
+
+    @Override
+    public String description() {
+        return "查询两座城市之间的交通方式（LLM 生成，需配置 API Key）";
+    }
+
+    @Override
+    public String argsHint() {
+        return "{\"from\": \"出发城市\", \"to\": \"到达城市\"}";
+    }
+
+    @Override
+    public ToolResult execute(Map<String, Object> args, String userCommand) {
         if (!llmClient.isEnabled()) {
-            throw new IllegalStateException("未配置 LLM，无法生成交通信息");
+            return mockResult(args, userCommand);
         }
-        String content = llmClient.chat(SYSTEM, "用户指令：" + userCommand);
-        Map<String, Object> data = parseJsonObject(content);
-        if (data.isEmpty()) {
-            throw new IllegalStateException("LLM 返回格式无法解析");
+        try {
+            String content = llmClient.chat(SYSTEM, "用户指令：" + userCommand);
+            Map<String, Object> data = parseJsonObject(content);
+            if (data.isEmpty()) {
+                return mockResult(args, userCommand);
+            }
+            String summary = data.get("mode") + " " + data.get("duration") + " " + data.get("price") + " " + data.get("freq");
+            return new ToolResult("transit", data, null, summary);
+        } catch (Exception ex) {
+            return ToolResult.note("交通信息生成失败：" + ex.getMessage());
         }
-        String summary = data.get("mode") + " " + data.get("duration") + " " + data.get("price") + " " + data.get("freq");
-        return new ToolResult("transit", data, null, summary);
+    }
+
+    /** 无 LLM 时的降级：由指令派生的参考性模拟数据，明确标注 */
+    private ToolResult mockResult(Map<String, Object> args, String userCommand) {
+        String from = str(args.get("from"));
+        String to = str(args.get("to"));
+        String text = (userCommand == null ? "" : userCommand) + " " + from + " " + to;
+        String cityFrom = WeatherTool.findCity(text);
+        String route = cityFrom != null ? "（" + cityFrom + " 出发）" : "";
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("mode", "高铁 / 动车 · 模拟参考");
+        data.put("duration", "以 12306 实时查询为准");
+        data.put("price", "以 12306 实时查询为准");
+        data.put("freq", "每日多班次" + route);
+        return new ToolResult("transit", data, null, "模拟参考数据（未配置 API Key，建议以 12306 实时信息为准）");
     }
 
     private Map<String, Object> parseJsonObject(String content) {
@@ -55,5 +89,11 @@ public class TransitTool implements Tool {
         } catch (Exception ignored) {
         }
         return r;
+    }
+
+    private static String str(Object o) {
+        if (o == null) return null;
+        String s = String.valueOf(o).trim();
+        return s.isEmpty() ? null : s;
     }
 }

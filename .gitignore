@@ -1,0 +1,27 @@
+# 环境变量（含 API Key，勿提交）
+.env
+
+# Maven 构建产物
+backend/target/
+
+# 前端：Node 运行时与依赖（由 frontend-maven-plugin 自动下载）
+frontend/node/
+frontend/node_modules/
+
+# 前端构建产物（vite build 自动输出，勿手改）
+backend/src/main/resources/static/
+
+# GUI 测试截图
+gui-test-screenshots/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# 系统杂项
+.DS_Store
+Thumbs.db
+
+# ZCode 会话目录
+.zcode/
