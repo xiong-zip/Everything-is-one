@@ -17,7 +17,8 @@
 | **GitLab 只读查询 + 受控写操作** | 提交/项目/Issue/MR/流水线查询；创建 Issue、评论等低风险写操作需人工确认 |
 | **GitLab 效能日报/周报** | 拉取时间窗内逐条提交，LLM 归纳成固定格式报告，支持「今天/昨天/本周」 |
 | **自动晨报机器人** | 定时（默认工作日 9 点）生成昨日日报并推送到企微/钉钉 Webhook，全程无人值守 |
-| **历史回放** | 每个任务的完整事件流落 SQLite，可随时原样回放 |
+| **效能热力图** | 半年 GitLab 提交分布一图可见：总提交、活跃天、最长连续（数据缓存 10 分钟） |
+| **历史回放 + 搜索** | 每个任务的完整事件流落 SQLite，可搜索指令/摘要、分页加载、随时原样回放；超期历史自动清理 |
 | **报告导出** | 结果一键下载 .txt / .md，或打印为 PDF |
 
 ## 两种运行模式
@@ -114,7 +115,9 @@ start.bat
 | `AGENTFLOW_MORNING_REPORT` | 否 | 自动晨报开关（默认 `false`） |
 | `AGENTFLOW_MORNING_CRON` | 否 | 晨报 cron（默认 `0 0 9 * * MON-FRI`，本地时区） |
 | `AGENTFLOW_MORNING_COMMAND` | 否 | 晨报指令（默认「根据我的 GitLab 提交记录生成昨天的工作日报」） |
-| `AGENTFLOW_DB` | 否 | SQLite 数据库路径（默认 `./data/agentflow.db`） |
+| `AGENTFLOW_DB` | 否 | SQLite 数据库路径（默认 `./data/agentflow.db`，相对路径自动锚定到项目根） |
+| `AGENTFLOW_RETENTION_DAYS` | 否 | 历史保留天数，超期记录启动时清理（默认 30，0 = 不清理） |
+| `AGENTFLOW_MAX_RUNS` | 否 | 历史条数上限（默认 1000，0 = 不限制） |
 | `AGENTFLOW_DEPT` | 否 | 报告抬头部门名（默认 `中台研发部`） |
 
 ## 前端开发模式（可选）
@@ -150,7 +153,8 @@ java -jar target/agentflow-backend-0.0.1-SNAPSHOT.jar   # 运行 jar
 | GET | `/api/agent/stream/{taskId}?afterSeq=N` | SSE 订阅执行过程（断线重连带 afterSeq 只补发缺失事件） |
 | POST | `/api/agent/cancel/{taskId}` | 手动停止任务 |
 | POST | `/api/agent/run/{taskId}/confirm` | confirm 模式回传确认/编辑后的计划 |
-| GET/DELETE | `/api/agent/history` `/{id}` | 任务历史列表 / 回放 / 删除 / 清空 |
+| GET/DELETE | `/api/agent/history` `/{id}` | 任务历史列表（支持 `keyword` 关键词搜索）/ 回放 / 删除 / 清空 |
+| GET | `/api/stats/heatmap?days=182` | GitLab 提交热力图数据（缓存 10 分钟） |
 | GET | `/api/tools` | 已注册工具列表（含动态工具、写操作标记） |
 | POST | `/api/tools/openapi` | 从 OpenAPI/Swagger 文档导入工具（body: `{"url": "..."}`） |
 | DELETE | `/api/tools/{name}` | 删除动态工具（内置工具不可删） |

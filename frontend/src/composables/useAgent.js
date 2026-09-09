@@ -302,10 +302,12 @@ export function useAgent() {
     }
   }
 
-  async function loadHistory() {
+  async function loadHistory(keyword = '', limit = 50) {
     historyLoading.value = true
     try {
-      const res = await fetch(`${API_BASE}/history`)
+      const q = new URLSearchParams({ limit: String(limit) })
+      if (keyword) q.set('keyword', keyword)
+      const res = await fetch(`${API_BASE}/history?${q}`)
       if (res.ok) history.value = await res.json()
     } catch {
       /* 静默降级 */

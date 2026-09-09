@@ -14,6 +14,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.TreeMap;
 
 /**
  * 公司内部 GitLab 只读查询工具：项目 / Issue / 合并请求 / 流水线。
@@ -84,6 +85,53 @@ public class GitLabTool implements Tool {
             log.warn("GitLab 查询失败: {}", ex.getMessage());
             return ToolResult.note("GitLab 查询失败：" + ex.getMessage());
         }
+    }
+
+    /* ---------- 效能统计 ---------- */
+
+    public boolean isConfigured() {
+        return !token.isEmpty();
+    }
+
+    /**
+     * 近 days 天的每日提交数（推送事件 commit_count 聚合），供效能热力图。
+     * 分页拉取时间窗内推送事件，返回 [{date: "yyyy-MM-dd", count: n}]（仅非零日）。
+     */
+    public List<Map<String, Object>> dailyCommitCounts(int days) throws Exception {
+        if (token.isEmpty()) {
+            return List.of();
+        }
+        JsonNode me = getJson("/api/v4/user");
+        long uid = me.path("id").asLong();
+        String after = java.time.LocalDate.now().minusDays(days - 1).toString();
+        Map<String, Integer> counts = new TreeMap<>();
+        for (int page = 1; page <= 10; page++) {
+            JsonNode events = getJson("/api/v4/users/" + uid + "/events?action=pushed&after=" + after
+                    + "&per_page=100&sort=desc&page=" + page);
+            if (!events.isArray() || events.isEmpty()) {
+                break;
+            }
+            boolean inWindow = false;
+            for (JsonNode e : events) {
+                OffsetDateTime t = parseTime(e.path("created_at").asText());
+                if (t == null) {
+                    continue;
+                }
+                String date = t.toLocalDate().toString();
+                if (date.compareTo(after) < 0) {
+                    continue;
+                }
+                inWindow = true;
+                int n = e.path("push_data").path("commit_count").asInt(1);
+                counts.merge(date, Math.max(1, n), Integer::sum);
+            }
+            if (events.size() < 100 || !inWindow) {
+                break;
+            }
+        }
+        List<Map<String, Object>> out = new ArrayList<>();
+        counts.forEach((d, c) -> out.add(Map.of("date", d, "count", c)));
+        return out;
     }
 
     /* ---------- 类型与时间窗推断 ---------- */

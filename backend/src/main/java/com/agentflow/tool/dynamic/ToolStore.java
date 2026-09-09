@@ -1,5 +1,6 @@
 package com.agentflow.tool.dynamic;
 
+import com.agentflow.engine.StoragePaths;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
@@ -31,7 +32,7 @@ public class ToolStore {
     private final String url;
 
     public ToolStore(@Value("${agentflow.storage.path:./data/agentflow.db}") String path) {
-        String dbPath = path == null || path.isBlank() ? "./data/agentflow.db" : path.trim();
+        String dbPath = StoragePaths.resolve(path);
         try {
             Path parent = Path.of(dbPath).toAbsolutePath().getParent();
             if (parent != null) {

@@ -707,7 +707,46 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 .sd-pushed { font-size: 11px; color: var(--mint-700); background: var(--mint-50); border-radius: 999px; padding: 1px 7px; }
 .sd-item-summary { margin-top: 6px; font-size: 12px; color: var(--ink-2); line-height: 1.6; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 
+/* ---------- 效能热力图抽屉 ---------- */
+.stats-drawer { width: min(520px, 96vw); }
+.hm-body { padding: 14px; overflow-y: auto; flex: 1; }
+.hm-summary { display: flex; gap: 10px; margin-bottom: 14px; }
+.hm-stat { flex: 1; text-align: center; background: var(--mint-50); border: 1px solid var(--mint-100); border-radius: var(--radius-sm); padding: 10px 6px; }
+.hm-stat b { display: block; font-size: 20px; color: var(--mint-700); line-height: 1.2; }
+.hm-stat span { font-size: 11px; color: var(--ink-3); }
+.hm-scroll { overflow-x: auto; padding-bottom: 6px; }
+.hm-months { display: grid; grid-auto-flow: column; grid-auto-columns: 16px; grid-template-rows: 16px; margin-left: 22px; margin-bottom: 3px; }
+.hm-month { font-size: 10.5px; color: var(--ink-3); white-space: nowrap; }
+.hm-grid-wrap { display: flex; gap: 4px; }
+.hm-weekdays { display: grid; grid-template-rows: repeat(7, 12px); gap: 3px; }
+.hm-weekdays span { font-size: 9.5px; color: var(--ink-3); line-height: 12px; }
+.hm-grid { display: flex; gap: 3px; }
+.hm-week { display: grid; grid-template-rows: repeat(7, 12px); gap: 3px; }
+.hm-cell { width: 12px; height: 12px; border-radius: 3px; }
+.hm-cell.lv-1 { background: transparent; }
+.hm-cell.lv0 { background: var(--bg-soft); border: 1px solid var(--line); }
+.hm-cell.lv1 { background: var(--mint-100); }
+.hm-cell.lv2 { background: var(--mint-200); }
+.hm-cell.lv3 { background: var(--mint-400); }
+.hm-cell.lv4 { background: var(--mint-600); }
+.hm-legend { display: flex; align-items: center; gap: 4px; margin-top: 12px; font-size: 11px; color: var(--ink-3); }
+.hm-legend .hm-cell { width: 10px; height: 10px; }
+.hm-updated { margin-left: auto; font-size: 10.5px; }
+
 /* ---------- 回放标识 & 流式光标 ---------- */
+.his-search { padding: 10px 12px 0; }
+.his-input {
+  width: 100%; font-size: 12.5px; color: var(--ink-1);
+  border: 1px solid var(--line-strong); border-radius: 10px;
+  padding: 8px 10px; background: var(--bg-soft); outline: none;
+}
+.his-input:focus { border-color: var(--mint-400); background: #fff; }
+.his-more {
+  display: block; width: 100%; margin: 4px 0 10px;
+  border: 1px dashed var(--line-strong); background: none; cursor: pointer;
+  font-size: 12px; color: var(--ink-3); padding: 8px; border-radius: var(--radius-sm);
+}
+.his-more:hover { color: var(--mint-700); border-color: var(--mint-400); background: var(--mint-50); }
 .replay-badge {
   font-size: 10.5px; color: var(--sky);
   border: 1px solid #cbe9f8; background: var(--sky-soft);

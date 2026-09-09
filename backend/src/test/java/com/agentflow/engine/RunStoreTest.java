@@ -39,7 +39,7 @@ class RunStoreTest {
         assertEquals("done", run.get("status"));
         assertEquals("查天气", run.get("command"));
         assertEquals(3, ((List<?>) run.get("events")).size());
-        assertEquals("查天气", String.valueOf(store.listRuns(10).get(0).get("command")));
+        assertEquals("查天气", String.valueOf(store.listRuns(10, null).get(0).get("command")));
     }
 
     @Test
@@ -54,6 +54,22 @@ class RunStoreTest {
         List<Map<String, Object>> tail = store.listEvents(runId, 3);
         assertEquals(1, tail.size());
         assertEquals("status", tail.get(0).get("event"));
+    }
+
+    @Test
+    void listRunsByKeyword() {
+        RunStore store = newStore();
+        store.init();
+        long a = store.createRun("t-a", "查厦门今天天气");
+        long b = store.createRun("t-b", "写一封请假邮件");
+        store.finishRun(a, "done", "已查询厦门天气", "…");
+        store.finishRun(b, "done", "请假邮件已生成", "…");
+
+        assertEquals(1, store.listRuns(10, "天气").size());
+        assertEquals(1, store.listRuns(10, "厦门").size());
+        assertEquals(1, store.listRuns(10, "请假").size());
+        assertEquals(2, store.listRuns(10, null).size());
+        assertEquals(0, store.listRuns(10, "股价").size());
     }
 
     @Test

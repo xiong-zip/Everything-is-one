@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
@@ -32,9 +33,18 @@ public class RunStore {
 
     private final ObjectMapper mapper = new ObjectMapper();
     private final String url;
+    private final int retentionDays;
+    private final int maxRuns;
 
-    public RunStore(@Value("${agentflow.storage.path:./data/agentflow.db}") String path) {
-        String dbPath = path == null || path.isBlank() ? "./data/agentflow.db" : path.trim();
+    public RunStore(String path) {
+        this(path, 30, 1000);
+    }
+
+    @Autowired
+    public RunStore(@Value("${agentflow.storage.path:./data/agentflow.db}") String path,
+                    @Value("${agentflow.storage.retention-days:30}") int retentionDays,
+                    @Value("${agentflow.storage.max-runs:1000}") int maxRuns) {
+        String dbPath = StoragePaths.resolve(path);
         try {
             Path parent = Path.of(dbPath).toAbsolutePath().getParent();
             if (parent != null) {
@@ -44,6 +54,8 @@ public class RunStore {
             log.warn("创建存储目录失败：{}", ex.getMessage());
         }
         this.url = "jdbc:sqlite:" + dbPath;
+        this.retentionDays = retentionDays;
+        this.maxRuns = maxRuns;
     }
 
     @PostConstruct
@@ -66,8 +78,28 @@ public class RunStore {
             st.execute("CREATE INDEX IF NOT EXISTS idx_events_run ON events(run_id, seq)");
             // 上次进程未正常收尾的任务（停留 running）标记为中断，避免历史里永远"进行中"
             st.executeUpdate("UPDATE runs SET status = 'interrupted' WHERE status = 'running'");
+            applyRetention(st);
         } catch (Exception ex) {
             log.error("初始化 SQLite 失败，历史记录将不可用：{}", ex.getMessage());
+        }
+    }
+
+    /** 保留策略：清理超过 N 天的运行（0=不限），且只保留最新 maxRuns 条（0=不限） */
+    private void applyRetention(Statement st) throws SQLException {
+        if (retentionDays > 0) {
+            st.executeUpdate("DELETE FROM events WHERE run_id IN (SELECT id FROM runs WHERE created_at < " +
+                    "datetime('now', 'localtime', '-' || " + retentionDays + " || ' days'))");
+            int old = st.executeUpdate("DELETE FROM runs WHERE created_at < " +
+                    "datetime('now', 'localtime', '-' || " + retentionDays + " || ' days')");
+            if (old > 0) {
+                log.info("已按保留策略清理 {} 条超过 {} 天的历史", old, retentionDays);
+            }
+        }
+        if (maxRuns > 0) {
+            st.executeUpdate("DELETE FROM events WHERE run_id IN (SELECT id FROM runs WHERE id NOT IN " +
+                    "(SELECT id FROM runs ORDER BY id DESC LIMIT " + maxRuns + "))");
+            st.executeUpdate("DELETE FROM runs WHERE id NOT IN " +
+                    "(SELECT id FROM runs ORDER BY id DESC LIMIT " + maxRuns + ")");
         }
     }
 
@@ -129,25 +161,46 @@ public class RunStore {
         }
     }
 
-    /** 历史列表（新→旧），供前端抽屉展示 */
-    public List<Map<String, Object>> listRuns(int limit) {
+    /** 历史列表（新→旧，可按指令/摘要关键词过滤），供前端抽屉展示 */
+    public List<Map<String, Object>> listRuns(int limit, String keyword) {
         List<Map<String, Object>> out = new ArrayList<>();
-        String sql = "SELECT id, command, summary, status, created_at FROM runs ORDER BY id DESC LIMIT " +
-                Math.max(1, Math.min(limit, 200));
-        try (Connection c = open(); Statement st = c.createStatement(); ResultSet rs = st.executeQuery(sql)) {
-            while (rs.next()) {
-                Map<String, Object> m = new LinkedHashMap<>();
-                m.put("id", rs.getLong("id"));
-                m.put("command", rs.getString("command"));
-                m.put("summary", rs.getString("summary"));
-                m.put("status", rs.getString("status"));
-                m.put("createdAt", rs.getString("created_at"));
-                out.add(m);
+        String kw = keyword == null ? "" : keyword.trim();
+        String sql;
+        if (kw.isEmpty()) {
+            sql = "SELECT id, command, summary, status, created_at FROM runs ORDER BY id DESC LIMIT " +
+                    Math.max(1, Math.min(limit, 200));
+            try (Connection c = open(); Statement st = c.createStatement(); ResultSet rs = st.executeQuery(sql)) {
+                collectRuns(rs, out);
+            } catch (Exception ex) {
+                log.warn("读取历史列表失败：{}", ex.getMessage());
+            }
+            return out;
+        }
+        sql = "SELECT id, command, summary, status, created_at FROM runs WHERE command LIKE ? ESCAPE '\\' " +
+                "OR summary LIKE ? ESCAPE '\\' ORDER BY id DESC LIMIT " + Math.max(1, Math.min(limit, 200));
+        String like = "%" + kw.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%";
+        try (Connection c = open(); PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setString(1, like);
+            ps.setString(2, like);
+            try (ResultSet rs = ps.executeQuery()) {
+                collectRuns(rs, out);
             }
         } catch (Exception ex) {
             log.warn("读取历史列表失败：{}", ex.getMessage());
         }
         return out;
+    }
+
+    private static void collectRuns(ResultSet rs, List<Map<String, Object>> out) throws SQLException {
+        while (rs.next()) {
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("id", rs.getLong("id"));
+            m.put("command", rs.getString("command"));
+            m.put("summary", rs.getString("summary"));
+            m.put("status", rs.getString("status"));
+            m.put("createdAt", rs.getString("created_at"));
+            out.add(m);
+        }
     }
 
     /** 单次运行的完整事件流，供回放 */

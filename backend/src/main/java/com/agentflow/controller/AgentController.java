@@ -83,8 +83,9 @@ public class AgentController {
     /* ---------- 任务历史与回放 ---------- */
 
     @GetMapping("/history")
-    public List<Map<String, Object>> history(@RequestParam(defaultValue = "50") int limit) {
-        return runStore.listRuns(limit);
+    public List<Map<String, Object>> history(@RequestParam(defaultValue = "50") int limit,
+                                             @RequestParam(name = "keyword", required = false) String keyword) {
+        return runStore.listRuns(limit, keyword);
     }
 
     /** 单次运行的完整事件流：前端按序重发即可原样回放 */

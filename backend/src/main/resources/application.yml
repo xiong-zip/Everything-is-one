@@ -22,6 +22,10 @@ agentflow:
   storage:
     # 任务历史数据库文件路径（SQLite），目录不存在会自动创建
     path: ${AGENTFLOW_DB:./data/agentflow.db}
+    # 历史保留策略：超过 N 天的运行记录在启动时清理（0 = 不清理）
+    retention-days: ${AGENTFLOW_RETENTION_DAYS:30}
+    # 历史条数上限：只保留最新的 N 条（0 = 不限制）
+    max-runs: ${AGENTFLOW_MAX_RUNS:1000}
   report:
     # GitLab 工作报告抬头中的部门名
     department: ${AGENTFLOW_DEPT:中台研发部}

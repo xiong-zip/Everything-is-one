@@ -1,6 +1,6 @@
 <template>
   <div class="app">
-    <ChatHeader :llm="llm" :hasRuns="runs.length > 0" :confirmMode="confirmMode" @clear="clearAll()" @history="openHistory()" @toggle-confirm="confirmMode = !confirmMode" @tools="toolsOpen = true" @morning="morningOpen = true" />
+    <ChatHeader :llm="llm" :hasRuns="runs.length > 0" :confirmMode="confirmMode" @clear="clearAll()" @history="openHistory()" @toggle-confirm="confirmMode = !confirmMode" @tools="toolsOpen = true" @morning="morningOpen = true" @stats="statsOpen = true" />
 
     <!-- 任务历史抽屉：点击条目即可回放当时的完整执行过程 -->
     <div v-if="historyOpen" class="drawer-mask" @click.self="historyOpen = false">
@@ -12,10 +12,20 @@
             <button class="hd-close" type="button" aria-label="关闭" @click="historyOpen = false">✕</button>
           </div>
         </div>
+        <div class="his-search">
+          <input
+            v-model="historyKeyword"
+            class="his-input"
+            type="search"
+            placeholder="搜索指令或结果摘要…"
+            aria-label="搜索历史"
+          />
+        </div>
         <div class="hd-list">
           <div v-if="historyLoading" class="hd-empty">加载中…</div>
           <div v-else-if="!history.length" class="hd-empty">
-            还没有历史任务<br /><small>每次执行都会自动存档，可随时回放</small>
+            {{ historyKeyword ? '没有匹配的历史任务' : '还没有历史任务' }}<br />
+            <small v-if="!historyKeyword">每次执行都会自动存档，可随时回放</small>
           </div>
           <div
             v-for="h in history"
@@ -34,6 +44,12 @@
             </div>
             <button class="hd-del" type="button" aria-label="删除该记录" @click.stop="removeHistory(h.id)">✕</button>
           </div>
+          <button
+            v-if="!historyLoading && history.length && history.length >= historyLimit"
+            class="his-more"
+            type="button"
+            @click="loadMoreHistory"
+          >加载更多</button>
         </div>
       </aside>
     </div>
@@ -43,6 +59,9 @@
 
     <!-- 晨报机器人抽屉：定时状态 + 立即试跑 -->
     <ScheduleDrawer v-if="morningOpen" @close="morningOpen = false" />
+
+    <!-- 效能热力图抽屉 -->
+    <StatsDrawer v-if="statsOpen" @close="statsOpen = false" />
 
     <main class="chat-main" ref="scrollEl">
       <div class="chat-scroll">
@@ -81,6 +100,7 @@ import AgentRun from './components/AgentRun.vue'
 import Composer from './components/Composer.vue'
 import ToolsDrawer from './components/ToolsDrawer.vue'
 import ScheduleDrawer from './components/ScheduleDrawer.vue'
+import StatsDrawer from './components/StatsDrawer.vue'
 import { useAgent } from './composables/useAgent'
 
 const API_BASE = '/api/agent'
@@ -90,8 +110,11 @@ const llm = ref({ text: '● 连接中…', cls: '' })
 const scrollEl = ref(null)
 const prefill = ref({ command: '', nonce: 0 })
 const historyOpen = ref(false)
+const historyKeyword = ref('')
+let historyLimit = 50
 const toolsOpen = ref(false)
 const morningOpen = ref(false)
+const statsOpen = ref(false)
 
 const {
   runs, busy, runAgent, stopRun, clearAll, confirmMode, confirmPlan,
@@ -108,7 +131,23 @@ function onPlanCancel() {
 
 async function openHistory() {
   historyOpen.value = true
-  await loadHistory()
+  await loadHistory(historyKeyword.value)
+}
+
+/* 搜索防抖：300ms 后带关键词重查 */
+let searchTimer = null
+watch(historyKeyword, (kw) => {
+  if (!historyOpen.value) return
+  clearTimeout(searchTimer)
+  searchTimer = setTimeout(() => {
+    historyLimit = 50
+    loadHistory(kw)
+  }, 300)
+})
+
+function loadMoreHistory() {
+  historyLimit += 50
+  loadHistory(historyKeyword.value, historyLimit)
 }
 
 async function replay(id) {

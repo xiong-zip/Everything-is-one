@@ -21,6 +21,18 @@
           :title="confirmMode ? '确认模式已开启：任务规划后先确认再执行' : '确认模式已关闭：规划后直接执行'"
           @click="$emit('toggle-confirm')"
         >{{ confirmMode ? '✓ 确认模式' : '确认模式' }}</button>
+        <button class="clear-btn history-btn" type="button" @click="$emit('stats')" title="效能热力图：我的 GitLab 提交分布">
+          <svg viewBox="0 0 20 20" width="13" height="13" fill="none" aria-hidden="true" style="vertical-align:-2px;margin-right:3px">
+            <rect x="3" y="3" width="3.4" height="3.4" rx="1" fill="currentColor" opacity="0.9"/>
+            <rect x="8.3" y="3" width="3.4" height="3.4" rx="1" fill="currentColor" opacity="0.45"/>
+            <rect x="13.6" y="3" width="3.4" height="3.4" rx="1" fill="currentColor" opacity="0.7"/>
+            <rect x="3" y="8.3" width="3.4" height="3.4" rx="1" fill="currentColor" opacity="0.45"/>
+            <rect x="8.3" y="8.3" width="3.4" height="3.4" rx="1" fill="currentColor"/>
+            <rect x="13.6" y="13.6" width="3.4" height="3.4" rx="1" fill="currentColor" opacity="0.45"/>
+            <rect x="8.3" y="13.6" width="3.4" height="3.4" rx="1" fill="currentColor" opacity="0.7"/>
+            <rect x="3" y="13.6" width="3.4" height="3.4" rx="1" fill="currentColor" opacity="0.25"/>
+          </svg>效能
+        </button>
         <button class="clear-btn history-btn" type="button" @click="$emit('morning')" title="晨报机器人：定时生成昨日日报并推送">
           <svg viewBox="0 0 20 20" width="13" height="13" fill="none" aria-hidden="true" style="vertical-align:-2px;margin-right:3px">
             <path d="M10 3.5a4.8 4.8 0 0 1 4.8 4.8c0 3.2.7 4.4 1.2 5H4c.5-.6 1.2-1.8 1.2-5A4.8 4.8 0 0 1 10 3.5z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
@@ -51,5 +63,5 @@ defineProps({
   hasRuns: { type: Boolean, default: false },
   confirmMode: { type: Boolean, default: false },
 })
-defineEmits(['clear', 'history', 'toggle-confirm', 'tools', 'morning'])
+defineEmits(['clear', 'history', 'toggle-confirm', 'tools', 'morning', 'stats'])
 </script>
