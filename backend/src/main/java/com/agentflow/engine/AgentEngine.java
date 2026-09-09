@@ -54,15 +54,10 @@ public class AgentEngine {
     /** 同一并行分组内的最大并发数 */
     private static final int MAX_PARALLEL = 3;
 
-    private static final String INTENT_SYSTEM =
-            "你是 AgentFlow 的意图分析模块。分析用户指令，输出一个 JSON 对象：" +
-            "{\"summary\": \"一句话概括用户想要什么（30 字以内）\", " +
-            "\"entities\": [\"识别到的关键实体，如 城市:北京、股票:贵州茅台、日期:明天\"]}。" +
-            "只输出 JSON，不要输出任何多余文字。";
-
     private static final String PLAN_SYSTEM_TEMPLATE =
-            "你是 AgentFlow 的任务规划器。请把用户指令拆解成 2~5 个有序、可执行的子任务，输出 JSON 对象：" +
-            "{\"steps\": [{\"kind\": \"tool|think|write\", \"tag\": \"简短类型标签\", \"title\": \"一句话子任务描述\", " +
+            "你是 AgentFlow 的意图分析与任务规划器。请分析用户指令并拆解成 2~5 个有序、可执行的子任务，输出一个 JSON 对象：" +
+            "{\"summary\": \"一句话概括用户想要什么（30 字以内）\", \"entities\": [\"关键实体，如 城市:北京、股票:贵州茅台、日期:明天\"], " +
+            "\"steps\": [{\"kind\": \"tool|think|write\", \"tag\": \"简短类型标签\", \"title\": \"一句话子任务描述\", " +
             "\"group\": 0, \"tool\": {\"name\": \"工具名\", \"args\": {参数对象}}}]}\n" +
             "规则：\n" +
             "- kind：tool=调用工具取数，think=分析推理，write=生成最终交付内容；tool 字段仅 kind=tool 时给出，否则为 null\n" +
@@ -100,9 +95,6 @@ public class AgentEngine {
     private static final String FINAL_SYSTEM =
             "你是 AgentFlow 智能体，负责把各子任务的执行结果汇总成最终交付物。" +
             "请按以下格式输出：第一行是一句话总结（30 字以内），空一行后输出完整成品。";
-
-    private static final String SUMMARY_SYSTEM =
-            "你是 AgentFlow 的汇总模块。用 30 字以内的一句话概括本次任务交付了什么，直接输出这句话，不要任何多余文字。";
 
     private final ToolRegistry toolRegistry;
     private final LlmClient llmClient;
@@ -335,22 +327,25 @@ public class AgentEngine {
         String command = session.command();
         String histBlock = historyBlock(session.history());
         try {
-            /* 阶段一：意图分析（真实抽取，非演出） */
-            recorder.send("status", map("text", "正在解析指令意图…", "cls", "is-running"));
+            /* 阶段一+二：意图分析与任务规划（LLM 模式一次调用同时完成；confirm 模式推送计划等待放行；ReAct 跳过预规划） */
             recorder.send("phase", map("name", "understand", "state", "active"));
-            Intent intent = analyzeIntent(command, histBlock);
-            recorder.send("intent", map("summary", intent.summary(), "entities", intent.entities()));
-            sleep(180);
-            recorder.send("phase", map("name", "understand", "state", "done"));
-
-            /* 阶段二：任务规划（LLM 优先，启发式兜底）；confirm 模式推送计划等待放行；ReAct 模式跳过预规划 */
+            recorder.send("status", map("text", "正在解析指令并规划任务…", "cls", "is-running"));
             List<PlanStep> steps = null;
             int total = 0;
+            Intent intent;
             if (reactEnabled()) {
+                intent = heuristicIntent(command);
+                recorder.send("intent", map("summary", intent.summary(), "entities", intent.entities()));
+                recorder.send("phase", map("name", "understand", "state", "done"));
                 recorder.send("phase", map("name", "plan", "state", "done"));
                 recorder.send("status", map("text", "ReAct 自主模式 · 逐步决策执行…", "cls", "is-running"));
             } else {
-                steps = plan(command, intent, histBlock);
+                PlanOutcome po = plan(command, histBlock);
+                intent = po.intent();
+                steps = po.steps();
+                recorder.send("intent", map("summary", intent.summary(), "entities", intent.entities()));
+                recorder.send("phase", map("name", "understand", "state", "done"));
+
                 recorder.send("phase", map("name", "plan", "state", "active"));
                 if (session.isConfirmMode() || requiresConfirm(steps)) {
                     steps = awaitPlanApproval(recorder, session, steps);
@@ -361,7 +356,6 @@ public class AgentEngine {
                     PlanStep s = steps.get(i);
                     recorder.send("step", map("index", i, "total", total,
                             "kind", s.kind(), "tag", s.tag(), "title", s.title()));
-                    sleep(150);
                 }
                 recorder.send("phase", map("name", "plan", "state", "done"));
             }
@@ -418,7 +412,6 @@ public class AgentEngine {
             /* 阶段四：结果汇总 */
             recorder.send("phase", map("name", "merge", "state", "active"));
             recorder.send("status", map("text", "正在汇总各任务结果…", "cls", "is-running"));
-            sleep(200);
             String[] finalOut = mergeFinal(command, histBlock, toolResults, writeOutput);
             recorder.send("done", map(
                     "summary", finalOut[0],
@@ -441,30 +434,30 @@ public class AgentEngine {
         }
     }
 
-    /* ================= 意图分析 ================= */
+    /* ================= 意图分析 + 任务规划 ================= */
 
     private record Intent(String summary, List<String> entities) {
     }
 
-    private Intent analyzeIntent(String command, String histBlock) {
+    /** 规划结果：意图与步骤同一次 LLM 调用产出 */
+    private record PlanOutcome(Intent intent, List<PlanStep> steps) {
+    }
+
+    /** 规划 + 意图一次 LLM 调用完成；失败回退启发式 */
+    private PlanOutcome plan(String command, String histBlock) {
         if (llmClient.isEnabled()) {
-            try {
-                String content = llmClient.chatJson(INTENT_SYSTEM, "用户指令：" + command + histBlock);
-                JsonNode node = readJsonObject(content);
-                String summary = node.path("summary").asText("");
-                if (!summary.isBlank()) {
-                    List<String> entities = new ArrayList<>();
-                    node.path("entities").forEach(e -> {
-                        String t = e.asText().trim();
-                        if (!t.isEmpty()) entities.add(t);
-                    });
-                    return new Intent(summary, entities);
+            for (int attempt = 0; attempt < 2; attempt++) {
+                try {
+                    PlanOutcome po = llmPlan(command, histBlock);
+                    if (!po.steps().isEmpty()) {
+                        return po;
+                    }
+                } catch (Exception ex) {
+                    log.warn("LLM 规划第 {} 次失败: {}", attempt + 1, ex.getMessage());
                 }
-            } catch (Exception ex) {
-                log.warn("LLM 意图分析失败，使用启发式: {}", ex.getMessage());
             }
         }
-        return heuristicIntent(command);
+        return new PlanOutcome(heuristicIntent(command), heuristicPlan(command));
     }
 
     /** 启发式意图抽取：城市/股票实体表 + 关键词类别 */
@@ -496,32 +489,26 @@ public class AgentEngine {
 
     /* ================= 任务规划 ================= */
 
-    private List<PlanStep> plan(String command, Intent intent, String histBlock) {
-        if (llmClient.isEnabled()) {
-            for (int attempt = 0; attempt < 2; attempt++) {
-                try {
-                    List<PlanStep> steps = llmPlan(command, histBlock);
-                    if (!steps.isEmpty()) {
-                        return steps;
-                    }
-                } catch (Exception ex) {
-                    log.warn("LLM 规划第 {} 次失败: {}", attempt + 1, ex.getMessage());
-                }
-            }
-        }
-        return heuristicPlan(command);
-    }
-
-    private List<PlanStep> llmPlan(String command, String histBlock) {
+    private PlanOutcome llmPlan(String command, String histBlock) {
         String system = String.format(PLAN_SYSTEM_TEMPLATE, toolRegistry.describeForPrompt());
         String content = llmClient.chatJson(system, "用户指令：" + command + histBlock);
         JsonNode node = readJsonObject(content);
+        String summary = node.path("summary").asText("");
+        List<String> entities = new ArrayList<>();
+        node.path("entities").forEach(e -> {
+            String t = e.asText().trim();
+            if (!t.isEmpty()) {
+                entities.add(t);
+            }
+        });
+        Intent intent = summary.isBlank() ? heuristicIntent(command) : new Intent(summary, entities);
+
         JsonNode arr = node.has("steps") && node.path("steps").isArray()
                 ? node.path("steps")
                 : fallbackArray(content);
         List<PlanStep> steps = new ArrayList<>();
         if (arr == null) {
-            return steps;
+            return new PlanOutcome(intent, steps);
         }
         for (JsonNode n : arr) {
             String kind = n.path("kind").asText("tool");
@@ -538,7 +525,7 @@ public class AgentEngine {
             int group = Math.max(0, n.path("group").asInt(0));
             steps.add(new PlanStep(kind, tag, title, tool, lines, group, false));
         }
-        return steps;
+        return new PlanOutcome(intent, steps);
     }
 
     /* ================= 计划放行（Human-in-the-loop） ================= */
@@ -769,7 +756,6 @@ public class AgentEngine {
 
         if ("tool".equals(s.kind()) && s.tool() != null) {
             recorder.send("tool", map("index", index, "name", s.tool().name(), "args", s.tool().args()));
-            sleep(220);
 
             ToolResult tr = null;
             try {
@@ -791,7 +777,6 @@ public class AgentEngine {
             recorder.send("result", map("index", index, "resultType", tr.resultType(),
                     "result", tr.result() == null ? Map.of() : tr.result(),
                     "list", tr.list() == null ? List.of() : tr.list()));
-            sleep(200);
             recorder.send("step-state", map("index", index, "state", "done"));
             return writeOutput;
         }
@@ -817,7 +802,6 @@ public class AgentEngine {
             }
             for (String line : lines) {
                 recorder.send("reason", map("index", index, "line", line));
-                sleep(160);
             }
             recorder.send("step-state", map("index", index, "state", "done"));
             return writeOutput;
@@ -867,7 +851,6 @@ public class AgentEngine {
             recorder.send("result", map("index", index, "resultType", "copy",
                     "result", map("versions", List.of(map("tag", llmGenerated ? "AI 生成" : "模拟模式 · 模板生成", "text", content))),
                     "list", List.of()));
-            sleep(200);
             recorder.send("step-state", map("index", index, "state", "done"));
             return content;
         }
@@ -1031,19 +1014,13 @@ public class AgentEngine {
     /* ================= 汇总 ================= */
 
     private String[] mergeFinal(String command, String histBlock, Map<String, String> toolResults, String writeOutput) {
-        // write 步已产出成品时直接采用原文，避免汇总改写破坏交付物格式；只补一句话总结
+        // write 步已产出成品时直接采用原文，避免汇总改写破坏交付物格式；总结本地取首行，省一次 LLM 调用
         if (writeOutput != null && !writeOutput.isBlank()) {
             String summary = null;
-            if (llmClient.isEnabled()) {
-                try {
-                    String s = llmClient.chat(SUMMARY_SYSTEM,
-                            "用户指令：" + command + "\n交付物内容：\n" + truncate(writeOutput, 1200));
-                    List<String> lines = splitLines(s);
-                    if (!lines.isEmpty()) {
-                        summary = truncate(lines.get(0), 40);
-                    }
-                } catch (Exception ex) {
-                    log.warn("LLM 总结生成失败: {}", ex.getMessage());
+            for (String l : writeOutput.split("\n")) {
+                if (!l.isBlank()) {
+                    summary = truncate(l.trim(), 40);
+                    break;
                 }
             }
             if (summary == null || summary.isBlank()) {
