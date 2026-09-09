@@ -66,7 +66,7 @@ Everything-is-one/
         │   ├── model/                     # PlanStep / ToolCall / RunRequest / PlanConfirmRequest
         │   └── tool/                      # 内置工具 + dynamic/（OpenAPI 导入的动态工具）
         └── resources/
-            ├── application.yml             # 配置（端口 8080 等）
+            ├── application.yml             # 配置（端口 8888 等）
             └── static/                     # 前端构建产物（自动生成，勿手改）
 ```
 
@@ -99,7 +99,7 @@ start.bat
 
 首次运行因下载依赖较慢，之后启动会很快。启动完成后访问：
 
-> http://localhost:8080
+> http://localhost:8888
 
 ## 环境变量
 
@@ -122,7 +122,7 @@ start.bat
 
 ## 前端开发模式（可选）
 
-日常开发前端时，用 Vite 热更新更方便（需要本机已装 Node.js 18+；`/api` 已代理到 8080 后端）：
+日常开发前端时，用 Vite 热更新更方便（需要本机已装 Node.js 18+；`/api` 已代理到 8888 后端）：
 
 ```bash
 # 终端 1：先启动后端
@@ -172,4 +172,4 @@ cd backend && ./mvnw test    # 10 个单测：工具注册表 / 动态工具 / �
 
 ## 配置
 
-服务端口等配置见 `backend/src/main/resources/application.yml`，默认 **8080**；前端开发端口见 `frontend/vite.config.js`（默认 **5173**）。
+服务端口等配置见 `backend/src/main/resources/application.yml`，默认 **8888**（可用环境变量 `AGENTFLOW_PORT` 覆盖）；前端开发端口见 `frontend/vite.config.js`（默认 **5173**）。
