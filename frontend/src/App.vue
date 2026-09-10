@@ -87,7 +87,7 @@
           <div class="user-bubble-row">
             <div class="user-bubble">{{ run.command }}</div>
           </div>
-          <AgentRun :run="run" @plan-confirm="onPlanConfirm" @plan-cancel="onPlanCancel" />
+          <AgentRun :run="run" @plan-confirm="onPlanConfirm" @plan-cancel="onPlanCancel" @clarify-run="runAgent" />
         </div>
       </div>
     </main>

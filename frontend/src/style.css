@@ -344,6 +344,32 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
   cursor: pointer; max-width: 190px;
 }
 .db-select:has(option:checked[value=""]) { color: var(--ink-3); background: none; border-color: var(--line-strong); }
+
+/* ---------- 未命中候选卡 ---------- */
+.clarify-card { border: 1px solid #f2dcae; background: var(--amber-soft); border-radius: var(--radius); padding: 12px 14px; margin: 12px 0; }
+.cl-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
+.cl-badge { font-size: 11px; font-weight: 700; color: #fff; background: var(--amber); border-radius: 999px; padding: 2px 9px; white-space: nowrap; }
+.cl-question { font-size: 13px; color: var(--ink-1); font-weight: 500; }
+.cl-option {
+  display: flex; justify-content: space-between; align-items: center; gap: 10px; width: 100%;
+  border: 1px solid var(--line-strong); background: var(--card); border-radius: var(--radius-sm);
+  padding: 9px 12px; margin-bottom: 7px; cursor: pointer; text-align: left;
+  transition: border-color 0.15s, background 0.15s, transform 0.15s;
+}
+.cl-option:hover { border-color: var(--mint-400); background: var(--mint-50); transform: translateX(2px); }
+.cl-label { font-size: 13px; color: var(--ink-1); font-family: var(--font-mono); }
+.cl-go { font-size: 11px; color: var(--mint-700); white-space: nowrap; }
+.cl-custom { display: flex; gap: 8px; margin-top: 10px; }
+.cl-input {
+  flex: 1; min-width: 0; font-size: 12.5px; color: var(--ink-1);
+  border: 1px solid var(--line-strong); border-radius: 10px; padding: 8px 10px; background: var(--card); outline: none;
+}
+.cl-input:focus { border-color: var(--mint-400); }
+.cl-send { white-space: nowrap; }
+.cl-foot { margin-top: 8px; text-align: right; }
+.cl-end { border: none; background: none; cursor: pointer; font-size: 12px; color: var(--ink-3); padding: 4px 6px; border-radius: 8px; }
+.cl-end:hover { color: var(--rose); background: var(--rose-soft); }
+.cl-ended { font-size: 12px; color: var(--ink-3); }
 .agent-body { padding: 18px 20px 20px; }
 
 /* 意图卡 */

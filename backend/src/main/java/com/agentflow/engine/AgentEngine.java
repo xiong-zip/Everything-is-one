@@ -784,6 +784,11 @@ public class AgentEngine {
             recorder.send("result", map("index", index, "resultType", tr.resultType(),
                     "result", tr.result() == null ? Map.of() : tr.result(),
                     "list", tr.list() == null ? List.of() : tr.list()));
+            // 未命中但带候选：推 clarify 事件，前端渲染选项卡（点选即改写重跑）
+            if (tr.clarify() != null && tr.clarify().options() != null && !tr.clarify().options().isEmpty()) {
+                recorder.send("clarify", map("question", tr.clarify().question(),
+                        "options", tr.clarify().options()));
+            }
             recorder.send("step-state", map("index", index, "state", "done"));
             return writeOutput;
         }

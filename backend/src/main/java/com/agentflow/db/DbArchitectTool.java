@@ -113,6 +113,17 @@ public class DbArchitectTool implements Tool {
             return ToolResult.note("db.inspect " + mode + " 失败（exit " + result.exitCode() + "）：\n"
                     + truncate(result.output(), 1500));
         }
+        // 未直接命中（表名/关键字拼错等）：拉表清单做模糊匹配，给出候选选项
+        String keyword = firstNonBlank(str(args.get("table")), str(args.get("tables")),
+                str(args.get("tableLike")), str(args.get("tableCommentLike")));
+        if (keyword != null && isNoHit(mode, result)) {
+            ToolResult.Clarify clarify = buildClarify(profileName, keyword, str(args.get("profile")) != null);
+            if (clarify != null) {
+                return ToolResult.withClarify(
+                        "没有找到与「" + keyword + "」直接匹配的表，已给出最相近的候选，请选择或修改关键词",
+                        clarify);
+            }
+        }
         List<String> lines = new ArrayList<>();
         for (String l : result.reportText().split("\n")) {
             String t = l.trim();
@@ -137,9 +148,116 @@ public class DbArchitectTool implements Tool {
                 "数据库透视 " + mode + " 完成 · 连接 " + profileName);
     }
 
+    /* ================= 未命中候选（拼写纠错式交互） ================= */
+
+    /** 判定"没有直接命中"：find-table 零匹配；analyze 指定表不存在（报告 0 表）；ddl 表不存在时静默输出空 DDL */
+    private static boolean isNoHit(String mode, DbScannerRunner.ScanResult result) {
+        String out = result.output();
+        if (out.contains("未找到匹配表")) {
+            return true;
+        }
+        if ("ddl".equals(mode)) {
+            return !out.contains("CREATE TABLE");
+        }
+        return out.contains("以下表未找到") && result.reportText().contains("表数量：`0`");
+    }
+
+    /**
+     * 拉取表清单（table-like "_" 可匹配几乎所有下划线命名表），与关键词模糊匹配取 top 4：
+     * 子串命中（表名/注释）强优先，其次编辑距离相似度。
+     */
+    private ToolResult.Clarify buildClarify(String profileName, String keyword, boolean explicitProfile) {
+        try {
+            DbScannerRunner.ScanResult r = runner.run(
+                    List.of("find-table", "--profile", profileName, "--table-like", "_"), profileName);
+            if (!r.ok()) {
+                return null;
+            }
+            List<String[]> tables = new ArrayList<>();
+            for (String line : r.output().split("\n")) {
+                // find-table 输出 markdown 表：| 表名 | 中文名/注释 |
+                java.util.regex.Matcher m = TABLE_ROW.matcher(line.trim());
+                if (m.matches()) {
+                    String comment = m.group(2);
+                    tables.add(new String[]{m.group(1), "-".equals(comment) ? "" : comment});
+                }
+                if (tables.size() >= 500) {
+                    break;
+                }
+            }
+            if (tables.isEmpty()) {
+                return null;
+            }
+            String kw = keyword.toLowerCase().replaceAll("[\\s_]", "");
+            record Candidate(String name, String comment, int score) {
+            }
+            List<Candidate> best = new ArrayList<>();
+            for (String[] t : tables) {
+                String name = t[0];
+                String comment = t[1];
+                String normName = name.toLowerCase().replaceAll("[\\s_]", "");
+                int score;
+                if (normName.contains(kw) || (!comment.isEmpty() && comment.contains(keyword))) {
+                    score = 100;
+                } else {
+                    int dist = levenshtein(normName, kw);
+                    int maxLen = Math.max(normName.length(), kw.length());
+                    score = maxLen == 0 ? 0 : (int) (80.0 * (maxLen - dist) / maxLen);
+                }
+                if (score >= 45) {
+                    best.add(new Candidate(name, comment, score));
+                }
+            }
+            best.sort((a, b) -> b.score() - a.score());
+            if (best.isEmpty()) {
+                return null;
+            }
+            List<Map<String, String>> options = new ArrayList<>();
+            for (Candidate c : best.subList(0, Math.min(4, best.size()))) {
+                String label = c.comment().isEmpty() ? c.name() : c.name() + "（" + c.comment() + "）";
+                String action = "查 " + c.name() + " 表的详细结构"
+                        + (explicitProfile ? "（" + profileName + "）" : "");
+                options.add(Map.of("label", label, "action", action));
+            }
+            String question = "没有找到与「" + keyword + "」直接匹配的表，你想找的是不是：";
+            return new ToolResult.Clarify(question, options);
+        } catch (Exception ex) {
+            log.warn("生成候选失败: {}", ex.getMessage());
+            return null;
+        }
+    }
+
+    private static final java.util.regex.Pattern TABLE_ROW =
+            java.util.regex.Pattern.compile("\\|\\s*([A-Za-z0-9_$.]+)\\s*\\|\\s*([^|]*?)\\s*\\|");
+
+    private static int levenshtein(String a, String b) {
+        int[][] dp = new int[a.length() + 1][b.length() + 1];
+        for (int i = 0; i <= a.length(); i++) {
+            dp[i][0] = i;
+        }
+        for (int j = 0; j <= b.length(); j++) {
+            dp[0][j] = j;
+        }
+        for (int i = 1; i <= a.length(); i++) {
+            for (int j = 1; j <= b.length(); j++) {
+                int cost = a.charAt(i - 1) == b.charAt(j - 1) ? 0 : 1;
+                dp[i][j] = Math.min(Math.min(dp[i - 1][j] + 1, dp[i][j - 1] + 1), dp[i - 1][j - 1] + cost);
+            }
+        }
+        return dp[a.length()][b.length()];
+    }
+
+    private static String firstNonBlank(String... values) {
+        for (String v : values) {
+            if (v != null && !v.isBlank()) {
+                return v;
+            }
+        }
+        return null;
+    }
+
     /** 模式解析：显式参数优先，其次从指令关键词推断，默认 analyze */
-    private String resolveMode(String mode, String command) {
-        if (mode != null && !mode.isBlank()) {
+    private String resolveMode(String mode, String command) {        if (mode != null && !mode.isBlank()) {
             return mode.trim().toLowerCase();
         }
         String c = command == null ? "" : command;

@@ -57,6 +57,9 @@
         </ol>
       </div>
 
+      <!-- 未命中候选卡：置于折叠区外，任务完成后仍可点击选项重跑 -->
+      <ClarifyCard v-if="run.clarify" :clarify="run.clarify" @run="(action) => $emit('clarify-run', action)" />
+
       <!-- 最终答案 -->
       <div class="final-panel" v-if="run.final.visible">
         <div class="fp-head">
@@ -91,11 +94,12 @@ import { computed, ref } from 'vue'
 import StepCard from './StepCard.vue'
 import PlanApproval from './PlanApproval.vue'
 import ReportText from './ReportText.vue'
+import ClarifyCard from './ClarifyCard.vue'
 
 const props = defineProps({
   run: { type: Object, required: true },
 })
-defineEmits(['plan-confirm', 'plan-cancel'])
+defineEmits(['plan-confirm', 'plan-cancel', 'clarify-run'])
 
 const phaseList = { understand: '意图分析', plan: '任务规划', execute: '逐步执行', merge: '结果汇总' }
 const visibleSteps = computed(() => props.run.steps.filter(Boolean))

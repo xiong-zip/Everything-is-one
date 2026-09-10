@@ -32,6 +32,7 @@ function newRun(id, command, replayed = false) {
     phases: { understand: '', plan: '', execute: '', merge: '' },
     steps: [],
     planProposal: null, // confirm 模式：{ steps, waiting, confirmed }
+    clarify: null, // 未命中候选：{ question, options, done }
     confirmResolve: null, // 等待用户确认计划的 Promise resolver
     processExpanded: true, // 执行过程折叠态：完成后默认收起
     final: { visible: false, cancelled: false, summary: '', output: '', meta: [], durationMs: 0 },
@@ -90,6 +91,14 @@ export function useAgent() {
           run.planProposal.skipped = run.planProposal.steps.filter((s) => s.skip).length
         }
         resolveConfirm(run)
+      },
+      /* 未命中候选：选项卡展示；回放时直接呈收起态 */
+      clarify(d) {
+        run.clarify = {
+          question: d.question || '没有找到直接匹配的结果，你想找的是：',
+          options: d.options || [],
+          done: !!instant,
+        }
       },
       intent(d) {
         run.intent = { summary: d.summary || '', entities: d.entities || [] }

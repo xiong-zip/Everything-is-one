@@ -88,6 +88,11 @@ function send() {
   const text = command.value.trim()
   if (!text || props.busy) return
   emit('send', text)
+  // 发送后清空输入框并复位高度
+  command.value = ''
+  if (inputEl.value) {
+    inputEl.value.style.height = 'auto'
+  }
 }
 
 function onKeydown(e) {
