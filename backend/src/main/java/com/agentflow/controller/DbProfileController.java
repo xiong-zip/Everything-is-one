@@ -7,6 +7,7 @@ import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
@@ -30,6 +31,23 @@ public class DbProfileController {
     @GetMapping
     public List<Map<String, Object>> list() {
         return store.listSafe();
+    }
+
+    /** 当前默认连接（聊天时不点名 profile 时 db.inspect 自动使用） */
+    @GetMapping("/active")
+    public Map<String, Object> active() {
+        return Map.of("name", store.getActive() == null ? "" : store.getActive());
+    }
+
+    /** 一键切换默认连接；name 传空表示取消默认 */
+    @PutMapping("/active")
+    public Map<String, String> setActive(@RequestBody Map<String, String> body) {
+        String name = body == null ? "" : body.getOrDefault("name", "");
+        if (!name.isBlank() && store.find(name) == null) {
+            throw new IllegalArgumentException("连接不存在：" + name);
+        }
+        store.setActive(name.isBlank() ? null : name);
+        return Map.of("ok", name.isBlank() ? "cleared" : name);
     }
 
     /** 保存（按 name 覆盖）；password 留空表示沿用原密码 */

@@ -63,16 +63,18 @@
         <div v-else-if="!profiles.length" class="hd-empty">
           还没有配置连接<br /><small>添加后即可在对话中说「查 DM_TEST 里 SYS_USER 表结构」</small>
         </div>
-        <div v-for="p in profiles" :key="p.name" class="db-item">
+        <div v-for="p in profiles" :key="p.name" class="db-item" :class="{ active: p.name === activeName }">
           <div class="db-item-main">
             <div class="db-item-head">
               <code>{{ p.name }}</code>
               <span class="db-tag" :class="p.type">{{ typeName(p.type) }}</span>
+              <span v-if="p.name === activeName" class="db-active-badge">★ 默认</span>
               <span class="db-host">{{ p.host }}:{{ p.port }} · {{ p.username }}</span>
             </div>
             <div class="db-item-dbs">库：{{ p.databases }}<template v-if="p.schema"> · Schema：{{ p.schema }}</template></div>
           </div>
           <div class="db-item-ops">
+            <button v-if="p.name !== activeName" class="db-op" type="button" @click="makeActive(p.name)">设为默认</button>
             <button class="db-op" type="button" :disabled="testing === p.name" @click="test(p.name)">
               {{ testing === p.name ? '测试中…' : '测试' }}
             </button>
@@ -88,25 +90,44 @@
 <script setup>
 import { onMounted, ref } from 'vue'
 
-defineEmits(['close'])
-
 const profiles = ref([])
 const loading = ref(false)
 const saving = ref(false)
 const testing = ref('')
 const editing = ref(null)
 const message = ref(null)
+const activeName = ref('')
 const emptyForm = { name: '', type: 'dameng', host: '', port: 5253, databases: '', username: '', password: '', schema: '' }
 const form = ref({ ...emptyForm })
+
+const emit = defineEmits(['close', 'active-changed'])
 
 async function load() {
   loading.value = true
   try {
-    const res = await fetch('/api/dbprofiles')
+    const [res, act] = await Promise.all([
+      fetch('/api/dbprofiles'),
+      fetch('/api/dbprofiles/active'),
+    ])
     if (res.ok) profiles.value = await res.json()
+    if (act.ok) activeName.value = (await act.json()).name || ''
   } catch { /* 静默 */ } finally {
     loading.value = false
   }
+}
+
+/* 一键设为默认连接：之后聊天不用点名，db.inspect 自动用它 */
+async function makeActive(name) {
+  activeName.value = name
+  emit('active-changed', name)
+  try {
+    await fetch('/api/dbprofiles/active', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    })
+  } catch { /* 静默 */ }
+  message.value = { text: `已把 ${name} 设为默认连接，对话中直接说需求即可`, cls: 'ok' }
 }
 
 async function save() {

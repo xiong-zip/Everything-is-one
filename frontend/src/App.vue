@@ -64,7 +64,7 @@
     <StatsDrawer v-if="statsOpen" @close="statsOpen = false" />
 
     <!-- 数据库连接抽屉 -->
-    <DbDrawer v-if="dbOpen" @close="dbOpen = false" />
+    <DbDrawer v-if="dbOpen" @close="dbOpen = false" @active-changed="dbActive = $event" />
 
     <main class="chat-main" ref="scrollEl">
       <div class="chat-scroll">
@@ -92,7 +92,7 @@
       </div>
     </main>
 
-    <Composer :busy="busy" :examples="examples" :prefill="prefill" :confirmMode="confirmMode" @send="runAgent" @stop="stopRun" @toggle-confirm="confirmMode = !confirmMode" />
+    <Composer :busy="busy" :examples="examples" :prefill="prefill" :confirmMode="confirmMode" :dbProfiles="dbProfiles" :dbActive="dbActive" @send="runAgent" @stop="stopRun" @toggle-confirm="confirmMode = !confirmMode" @db-active="onDbActive" />
   </div>
 </template>
 
@@ -120,6 +120,36 @@ const toolsOpen = ref(false)
 const morningOpen = ref(false)
 const statsOpen = ref(false)
 const dbOpen = ref(false)
+const dbProfiles = ref([])
+const dbActive = ref('')
+
+async function loadDbMeta() {
+  try {
+    const [res, act] = await Promise.all([
+      fetch('/api/dbprofiles'),
+      fetch('/api/dbprofiles/active'),
+    ])
+    if (res.ok) dbProfiles.value = await res.json()
+    if (act.ok) dbActive.value = (await act.json()).name || ''
+  } catch { /* 后端不可用时静默降级 */ }
+}
+
+/* 输入区一键切换默认数据库连接：之后聊天不点名库也用它 */
+async function onDbActive(name) {
+  dbActive.value = name
+  try {
+    await fetch('/api/dbprofiles/active', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    })
+  } catch { /* 静默 */ }
+}
+
+/* 连接抽屉里可能改了连接/默认，关闭后刷新输入区选择器状态 */
+watch(dbOpen, (open) => {
+  if (!open) loadDbMeta()
+})
 
 const {
   runs, busy, runAgent, stopRun, clearAll, confirmMode, confirmPlan,
@@ -184,6 +214,7 @@ watch(
 )
 
 onMounted(async () => {
+  loadDbMeta()
   try {
     const res = await fetch(`${API_BASE}/scenarios`)
     if (res.ok) examples.value = await res.json()

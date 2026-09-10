@@ -36,6 +36,19 @@
           >{{ s.short }}</button>
         </div>
         <div class="composer-right">
+          <select
+            v-if="dbProfiles.length"
+            class="db-select"
+            :value="dbActive"
+            title="默认数据库连接：聊天中不点名数据库时自动使用它查询"
+            aria-label="选择默认数据库连接"
+            @change="$emit('db-active', $event.target.value)"
+          >
+            <option value="">🗄 数据库：未指定</option>
+            <option v-for="p in dbProfiles" :key="p.name" :value="p.name">
+              🗄 {{ p.name }} · {{ typeName(p.type) }}
+            </option>
+          </select>
           <button
             class="confirm-toggle-sm"
             :class="{ on: confirmMode }"
@@ -58,9 +71,15 @@ const props = defineProps({
   examples: { type: Array, default: () => [] },
   prefill: { type: Object, default: () => ({ command: '', nonce: 0 }) },
   confirmMode: { type: Boolean, default: false },
+  dbProfiles: { type: Array, default: () => [] },
+  dbActive: { type: String, default: '' },
 })
 
-const emit = defineEmits(['send', 'stop', 'toggle-confirm'])
+const emit = defineEmits(['send', 'stop', 'toggle-confirm', 'db-active'])
+
+function typeName(t) {
+  return { dameng: '达梦', mysql: 'MySQL', postgresql: 'PostgreSQL', oracle: 'Oracle' }[t] || t
+}
 
 const command = ref('')
 const inputEl = ref(null)

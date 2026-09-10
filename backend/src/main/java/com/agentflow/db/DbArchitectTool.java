@@ -35,7 +35,7 @@ public class DbArchitectTool implements Tool {
         return "db.inspect";
     }
 
-    /** 动态描述：把当前已配置的连接清单告诉规划器，未配置时引导用户去界面添加 */
+    /** 动态描述：标注当前默认连接与全部连接清单，引导规划器不点名时走默认 */
     @Override
     public String description() {
         List<DbProfile> profiles = store.list();
@@ -45,13 +45,16 @@ public class DbArchitectTool implements Tool {
         String names = profiles.stream()
                 .map(p -> p.name() + "（" + p.type() + "，库 " + p.databases() + "）")
                 .collect(Collectors.joining("；"));
+        String active = store.getActive();
         return "数据库透视：查表结构/DDL/建表语法、按中文名找表、导出数据为 INSERT/表格、生成 ER 图、跨库结构比对、业务域分析"
-                + "（只读查询）。已配置连接：" + names + "。profile 必须用上述连接名之一";
+                + "（只读查询）。已配置连接：" + names + "。用户指令未指明数据库时不要传 profile 参数"
+                + (active == null ? "" : "（当前默认连接：" + active + "）")
+                + "；明确提到某个连接/库时 profile 用对应连接名";
     }
 
     @Override
     public String argsHint() {
-        return "{\"profile\": \"连接名（已配置的 profile）\", \"mode\": \"analyze|ddl|find-table|export-row|scan|compare|domain（默认 analyze：单表/多表/关键字聚焦分析）\", "
+        return "{\"profile\": \"连接名（用户未指明数据库时省略，自动用默认连接）\", \"mode\": \"analyze|ddl|find-table|export-row|scan|compare|domain（默认 analyze：单表/多表/关键字聚焦分析）\", "
                 + "\"db\": \"数据库名（profile 配多个库时选择）\", \"table\": \"目标表名\", \"tables\": \"多表逗号分隔\", "
                 + "\"tableLike\": \"表名关键字\", \"tableCommentLike\": \"表中文名/注释关键字\", \"schema\": \"Schema（Oracle/PG/达梦）\", "
                 + "\"where\": \"export-row 过滤条件（不带 WHERE）\", \"filterColumn\": \"等值过滤字段\", \"filterValue\": \"等值过滤值\", "
@@ -65,13 +68,17 @@ public class DbArchitectTool implements Tool {
         if (profiles.isEmpty()) {
             return ToolResult.note("还没有配置数据库连接：请先在「工作台 → 数据库连接」中添加连接，再执行数据库类任务");
         }
+        // profile 解析优先级：显式参数 > 界面设定的默认连接 > 唯一连接
         String profileName = str(args.get("profile"));
         if (profileName == null) {
-            if (profiles.size() == 1) {
-                profileName = profiles.get(0).name();
-            } else {
-                return ToolResult.note("配置了多个连接，请在指令中指明用哪个：" + profileNames(profiles));
-            }
+            profileName = store.getActive();
+        }
+        if (profileName == null && profiles.size() == 1) {
+            profileName = profiles.get(0).name();
+        }
+        if (profileName == null) {
+            return ToolResult.note("配置了多个连接且未指定默认：请在指令中指明用哪个（" + profileNames(profiles)
+                    + "），或在「工作台 → 数据库连接 / 输入区选择器」中设定默认连接");
         }
         if (store.find(profileName) == null) {
             return ToolResult.note("连接「" + profileName + "」不存在，可用连接：" + profileNames(profiles));

@@ -51,8 +51,39 @@ public class DbProfileStore {
                     "name TEXT PRIMARY KEY," +
                     "config_json TEXT NOT NULL," +
                     "created_at TEXT NOT NULL)");
+            st.execute("CREATE TABLE IF NOT EXISTS db_profiles_meta (" +
+                    "key TEXT PRIMARY KEY," +
+                    "value TEXT NOT NULL)");
         } catch (Exception ex) {
             log.error("初始化 db_profiles 表失败：{}", ex.getMessage());
+        }
+    }
+
+    /* ---------- 默认连接（聊天时不点名 profile 即用它） ---------- */
+
+    /** 当前默认连接名；未设置返回 null */
+    public String getActive() {
+        try (Connection c = open();
+             PreparedStatement ps = c.prepareStatement("SELECT value FROM db_profiles_meta WHERE key = 'active'")) {
+            try (ResultSet rs = ps.executeQuery()) {
+                String name = rs.next() ? rs.getString("value") : null;
+                // 默认连接被删后自动失效
+                return name != null && find(name) != null ? name : null;
+            }
+        } catch (Exception ex) {
+            return null;
+        }
+    }
+
+    public void setActive(String name) {
+        try (Connection c = open();
+             PreparedStatement ps = c.prepareStatement(
+                     "INSERT INTO db_profiles_meta(key, value) VALUES('active', ?) " +
+                             "ON CONFLICT(key) DO UPDATE SET value=excluded.value")) {
+            ps.setString(1, name == null ? "" : name);
+            ps.executeUpdate();
+        } catch (Exception ex) {
+            log.warn("设置默认连接失败：{}", ex.getMessage());
         }
     }
 
@@ -115,7 +146,11 @@ public class DbProfileStore {
         try (Connection c = open();
              PreparedStatement ps = c.prepareStatement("DELETE FROM db_profiles WHERE name = ?")) {
             ps.setString(1, name);
-            return ps.executeUpdate() > 0;
+            boolean deleted = ps.executeUpdate() > 0;
+            if (deleted && name.equals(getActive())) {
+                setActive(null);
+            }
+            return deleted;
         } catch (Exception ex) {
             log.warn("删除数据库连接失败：{}", ex.getMessage());
             return false;

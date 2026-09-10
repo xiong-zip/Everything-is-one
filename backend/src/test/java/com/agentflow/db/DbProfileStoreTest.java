@@ -44,4 +44,26 @@ class DbProfileStoreTest {
         assertNull(store.find("DM_TEST"));
         assertFalse(store.delete("DM_TEST"));
     }
+
+    @Test
+    void activeProfileLifecycle() {
+        DbProfileStore store = new DbProfileStore(tempDir.resolve("db-" + System.nanoTime() + ".db").toString());
+        store.init();
+        assertNull(store.getActive());
+
+        store.save(new DbProfile("A", "mysql", "h1", 3306, "db1", "u", "p", null, null));
+        store.save(new DbProfile("B", "dameng", "h2", 5253, "db2", "u", "p", null, null));
+
+        store.setActive("B");
+        assertEquals("B", store.getActive());
+
+        // 删除默认连接后自动失效
+        assertTrue(store.delete("B"));
+        assertNull(store.getActive());
+
+        // 清空默认
+        store.setActive("A");
+        store.setActive(null);
+        assertNull(store.getActive());
+    }
 }

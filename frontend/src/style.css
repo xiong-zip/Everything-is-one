@@ -336,6 +336,14 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 .db-op:hover { color: var(--mint-700); border-color: var(--mint-400); background: var(--mint-50); }
 .db-op:disabled { opacity: 0.6; cursor: default; }
 .db-op.del:hover { color: var(--rose); border-color: #f0b8c2; background: var(--rose-soft); }
+.db-item.active { border-color: var(--mint-400); background: var(--mint-50); }
+.db-active-badge { font-size: 10.5px; font-weight: 700; color: #fff; background: var(--mint-600); border-radius: 999px; padding: 1px 8px; }
+.db-select {
+  font-size: 11.5px; color: var(--mint-700); background: var(--mint-50);
+  border: 1px solid var(--mint-200); border-radius: 999px; padding: 3px 8px; outline: none;
+  cursor: pointer; max-width: 190px;
+}
+.db-select:has(option:checked[value=""]) { color: var(--ink-3); background: none; border-color: var(--line-strong); }
 .agent-body { padding: 18px 20px 20px; }
 
 /* 意图卡 */
