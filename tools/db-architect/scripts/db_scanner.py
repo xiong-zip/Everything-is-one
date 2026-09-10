@@ -466,8 +466,9 @@ def build_select_sql(db_type: str, table_name: str, schema: str = "",
         full_from = safe_table
 
     sql = f"SELECT * FROM {full_from}"
+    # WHERE 子句整体加括号：OR 条件下 ROWNUM 限行才不会因优先级失效
     if where_clause:
-        sql += f" WHERE {where_clause}"
+        sql += f" WHERE ({where_clause})"
     if limit and limit > 0:
         if db_type in ("oracle", "dameng"):
             if where_clause:

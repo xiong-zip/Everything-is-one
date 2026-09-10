@@ -57,7 +57,7 @@ public class DbArchitectTool implements Tool {
         return "{\"profile\": \"连接名（用户未指明数据库时省略，自动用默认连接）\", \"mode\": \"analyze|ddl|find-table|export-row|scan|compare|domain（默认 analyze：单表/多表/关键字聚焦分析）\", "
                 + "\"db\": \"数据库名（profile 配多个库时选择）\", \"table\": \"目标表名\", \"tables\": \"多表逗号分隔\", "
                 + "\"tableLike\": \"表名关键字\", \"tableCommentLike\": \"表中文名/注释关键字\", \"schema\": \"Schema（Oracle/PG/达梦）\", "
-                + "\"where\": \"export-row 过滤条件（不带 WHERE）\", \"filterColumn\": \"等值过滤字段\", \"filterValue\": \"等值过滤值\", "
+                + "\"where\": \"export-row 过滤条件（不带 WHERE，必须用表的真实列名，不确定列名时先用 ddl 模式查列）\", \"filterColumn\": \"等值过滤字段\", \"filterValue\": \"等值过滤值\", "
                 + "\"limit\": \"行数限制\", \"format\": \"insert|table|json|csv\", "
                 + "\"rightProfile\": \"compare 右侧连接\", \"rightDb\": \"compare 右侧库\", \"leftDb\": \"compare 左侧库\"}";
     }
@@ -85,6 +85,127 @@ public class DbArchitectTool implements Tool {
         }
 
         String mode = resolveMode(str(args.get("mode")), userCommand);
+        DbScannerRunner.ScanResult result = runner.run(buildArgs(args, profileName, mode), profileName);
+
+        // 自愈：export-row 因无效列名失败时（LLM 猜错列名），剔除引用该列的条件子句重试一次
+        String healedNote = null;
+        if (!result.ok() && "export-row".equals(mode)) {
+            HealedWhere healed = healWhere(result.output(), str(args.get("where")));
+            if (healed != null && !healed.where().isBlank()) {
+                Map<String, Object> retryArgs = new java.util.HashMap<>(args);
+                retryArgs.put("where", healed.where());
+                DbScannerRunner.ScanResult retry = runner.run(buildArgs(retryArgs, profileName, mode), profileName);
+                if (retry.ok()) {
+                    healedNote = "ℹ 已自动剔除无效列名（" + healed.badColumns() + "）并修正查询条件重试成功";
+                    result = retry;
+                }
+            }
+        }
+        if (!result.ok()) {
+            return ToolResult.note("db.inspect " + mode + " 失败（exit " + result.exitCode() + "）：\n"
+                    + truncate(result.output(), 1500));
+        }
+        // 未直接命中（表名/关键字拼错等）：拉表清单做模糊匹配，给出候选选项
+        String keyword = firstNonBlank(str(args.get("table")), str(args.get("tables")),
+                str(args.get("tableLike")), str(args.get("tableCommentLike")));
+        if (keyword != null && isNoHit(mode, result)) {
+            ToolResult.Clarify clarify = buildClarify(profileName, keyword, str(args.get("profile")) != null);
+            if (clarify != null) {
+                return ToolResult.withClarify(
+                        "没有找到与「" + keyword + "」直接匹配的表，已给出最相近的候选，请选择或修改关键词",
+                        clarify);
+            }
+        }
+        List<String> lines = new ArrayList<>();
+        if (healedNote != null) {
+            lines.add(healedNote);
+        }
+        for (String l : result.reportText().split("\n")) {
+            String t = l.trim();
+            if (!t.isEmpty()) {
+                lines.add(truncate(t, MAX_LINE_CHARS));
+            }
+        }
+        for (String l : result.output().split("\n")) {
+            String t = l.trim();
+            if (!t.isEmpty() && !t.startsWith("正在连接")) {
+                lines.add(truncate(t, MAX_LINE_CHARS));
+            }
+            if (lines.size() >= MAX_LINES) {
+                lines.add("…（输出过长已截断）");
+                break;
+            }
+        }
+        if (lines.isEmpty()) {
+            lines.add("（无输出）");
+        }
+        return new ToolResult("list", null, lines,
+                "数据库透视 " + mode + " 完成 · 连接 " + profileName);
+    }
+
+    /* ================= 无效列名自愈（export-row） ================= */
+
+    record HealedWhere(String where, String badColumns) {
+    }
+
+    /**
+     * 从驱动报错里解析无效列名（如「无效的列名[USER_CODE]」），
+     * 剔除 WHERE 中引用该列的条件子句；全删光时用名称类列对原关键词 LIKE 兜底。
+     */
+    static HealedWhere healWhere(String output, String where) {
+        if (where == null || where.isBlank() || output == null) {
+            return null;
+        }
+        java.util.Set<String> bad = new java.util.LinkedHashSet<>();
+        java.util.regex.Matcher m = java.util.regex.Pattern
+                .compile("无效的列名\\[([^\\]]+)\\]").matcher(output);
+        while (m.find()) {
+            String name = m.group(1).trim();
+            if (!name.isEmpty()) {
+                bad.add(name);
+            }
+        }
+        if (bad.isEmpty()) {
+            return null;
+        }
+        boolean orSplit = where.toUpperCase().contains(" OR ");
+        String[] tokens = orSplit ? where.split("(?i)\\s+or\\s+") : where.split("(?i)\\s+and\\s+");
+        List<String> kept = new ArrayList<>();
+        for (String token : tokens) {
+            boolean referencesBad = false;
+            for (String b : bad) {
+                if (java.util.regex.Pattern.compile("(?i)\\b" + java.util.regex.Pattern.quote(b) + "\\b")
+                        .matcher(token).find()) {
+                    referencesBad = true;
+                    break;
+                }
+            }
+            if (!referencesBad) {
+                kept.add(token.trim());
+            }
+        }
+        String healed = kept.isEmpty() ? nameLikeFallback(where) : String.join(orSplit ? " OR " : " AND ", kept);
+        if (healed == null || healed.isBlank()) {
+            return null;
+        }
+        return new HealedWhere(healed, String.join("、", bad));
+    }
+
+    /** WHERE 全部子句失效时：取原关键词，用常见名称列模糊匹配兜底 */
+    private static String nameLikeFallback(String where) {
+        java.util.regex.Matcher lit = java.util.regex.Pattern.compile("%([^%]+)%").matcher(where);
+        if (!lit.find()) {
+            return null;
+        }
+        String kw = lit.group(1).trim();
+        if (kw.isEmpty()) {
+            return null;
+        }
+        return "USER_NAME LIKE '%" + kw + "%' OR SPELL_CODE LIKE '%" + kw + "%' OR USER_NO LIKE '%" + kw + "%'";
+    }
+
+    /** 组装 db_scanner.py 的命令行参数（mode + 连接 + 过滤/导出选项） */
+    private List<String> buildArgs(Map<String, Object> args, String profileName, String mode) {
         List<String> cmd = new ArrayList<>();
         cmd.add(mode);
         addFlag(cmd, "--profile", profileName);
@@ -107,45 +228,7 @@ public class DbArchitectTool implements Tool {
             cmd.add("--max-tables");
             cmd.add("30");
         }
-
-        DbScannerRunner.ScanResult result = runner.run(cmd, profileName);
-        if (!result.ok()) {
-            return ToolResult.note("db.inspect " + mode + " 失败（exit " + result.exitCode() + "）：\n"
-                    + truncate(result.output(), 1500));
-        }
-        // 未直接命中（表名/关键字拼错等）：拉表清单做模糊匹配，给出候选选项
-        String keyword = firstNonBlank(str(args.get("table")), str(args.get("tables")),
-                str(args.get("tableLike")), str(args.get("tableCommentLike")));
-        if (keyword != null && isNoHit(mode, result)) {
-            ToolResult.Clarify clarify = buildClarify(profileName, keyword, str(args.get("profile")) != null);
-            if (clarify != null) {
-                return ToolResult.withClarify(
-                        "没有找到与「" + keyword + "」直接匹配的表，已给出最相近的候选，请选择或修改关键词",
-                        clarify);
-            }
-        }
-        List<String> lines = new ArrayList<>();
-        for (String l : result.reportText().split("\n")) {
-            String t = l.trim();
-            if (!t.isEmpty()) {
-                lines.add(truncate(t, MAX_LINE_CHARS));
-            }
-        }
-        for (String l : result.output().split("\n")) {
-            String t = l.trim();
-            if (!t.isEmpty() && !t.startsWith("正在连接")) {
-                lines.add(truncate(t, MAX_LINE_CHARS));
-            }
-            if (lines.size() >= MAX_LINES) {
-                lines.add("…（输出过长已截断）");
-                break;
-            }
-        }
-        if (lines.isEmpty()) {
-            lines.add("（无输出）");
-        }
-        return new ToolResult("list", null, lines,
-                "数据库透视 " + mode + " 完成 · 连接 " + profileName);
+        return cmd;
     }
 
     /* ================= 未命中候选（拼写纠错式交互） ================= */
