@@ -16,6 +16,7 @@
 | **OpenAPI 一键转工具** | 贴一个 Swagger/OpenAPI 文档地址，GET 接口自动变成 Agent 可调用的工具（持久化，重启不丢） |
 | **GitLab 只读查询 + 受控写操作** | 提交/项目/Issue/MR/流水线查询；创建 Issue、评论等低风险写操作需人工确认 |
 | **数据库透视（内置 db-architect）** | 自然语言查库表结构 / DDL / 按中文名找表 / 导出数据为 INSERT / ER 图 / 跨库结构比对，支持达梦、MySQL、Oracle、PostgreSQL；**连接配置在界面里管理**（工作台 → 数据库连接），无需改任何配置文件 |
+| **SigNoz 链路分析 + 故障案例知识库** | 给一个 trace ID 自动查 span 树与 ERROR/WARN 日志，输出根因、失败传播链、耗时与状态矛盾（如 HTTP 200 但业务失败）；默认 24h 查不到自动扩到 7d；分析前自动比对 `docs/incidents/` 知识库，命中已知故障直接复用历史处置；可将结论归档为案例（同一故障模式累加次数，不重复建档，归档需人工放行） |
 | **GitLab 效能日报/周报** | 拉取时间窗内逐条提交，LLM 归纳成固定格式报告，支持「今天/昨天/本周」 |
 | **自动晨报机器人** | 定时（默认工作日 9 点）生成昨日日报并推送到企微/钉钉 Webhook，全程无人值守 |
 | **效能热力图** | 半年 GitLab 提交分布一图可见：总提交、活跃天、最长连续（数据缓存 10 分钟） |
@@ -37,6 +38,11 @@
 Everything-is-one/
 ├── start.bat / start.sh        # 一键启动脚本（推荐）
 ├── .env.example                # 环境变量配置示例（复制为 .env 使用）
+├── .agents/                    # Agent 扩展（随 git 提交，团队共享）
+│   ├── mcp.json                # MCP 服务配置（signoz）
+│   └── skills/                 # 项目级 skill
+│       └── signoz-analyzing-traces/   # SigNoz 链路分析 + 故障案例沉淀
+├── docs/incidents/             # 故障案例知识库（trace 分析的沉淀产物）
 ├── frontend/                   # 前端工程（Vue 3 + Vite，对话流单页）
 │   ├── package.json            # npm 依赖清单
 │   ├── vite.config.js          # 构建输出到 backend static / 开发代理
@@ -65,6 +71,7 @@ Everything-is-one/
         │   ├── notify/                    # Webhook 推送（NotifyService）
         │   ├── llm/LlmClient.java         # DeepSeek 客户端（JSON mode + 流式）
         │   ├── model/                     # PlanStep / ToolCall / RunRequest / PlanConfirmRequest
+        │   ├── signoz/                    # SigNoz 链路分析（MCP 客户端 / 摘要 / 故障案例知识库）
         │   └── tool/                      # 内置工具 + dynamic/（OpenAPI 导入的动态工具）
         └── resources/
             ├── application.yml             # 配置（端口 8888 等）
@@ -120,6 +127,9 @@ start.bat
 | `AGENTFLOW_RETENTION_DAYS` | 否 | 历史保留天数，超期记录启动时清理（默认 30，0 = 不清理） |
 | `AGENTFLOW_MAX_RUNS` | 否 | 历史条数上限（默认 1000，0 = 不限制） |
 | `AGENTFLOW_DEPT` | 否 | 报告抬头部门名（默认 `中台研发部`） |
+| `SIGNOZ_MCP_URL` | 否 | SigNoz MCP 地址，用于链路分析工具（默认 `http://192.168.2.111:18000/mcp`，需内网可达） |
+| `SIGNOZ_TIME_RANGE` / `SIGNOZ_FALLBACK_RANGE` / `SIGNOZ_LOG_LIMIT` | 否 | 链路查询时间窗、查不到时的降级窗口、补查日志条数（默认 `24h` / `7d` / `10`；两天前的链路只有 `7d` 才查得到） |
+| `AGENTFLOW_INCIDENT_KB` | 否 | 故障案例知识库目录（默认 `./docs/incidents`，相对路径自动锚定项目根） |
 
 ## 前端开发模式（可选）
 

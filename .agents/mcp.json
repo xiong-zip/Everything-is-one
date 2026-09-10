@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "signoz": {
+      "type": "http",
+      "url": "http://192.168.2.111:18000/mcp"
+    }
+  }
+}

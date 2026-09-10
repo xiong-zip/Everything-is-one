@@ -36,6 +36,16 @@ agentflow:
     # 内置 db-architect 数据库透视：Python 解释器命令与脚本目录
     python-cmd: ${AGENTFLOW_DB_PYTHON:python}
     scripts-path: ${AGENTFLOW_DB_SCRIPTS:./tools/db-architect/scripts}
+  signoz:
+    # SigNoz 链路分析（内置 signoz.trace / signoz.case 工具）：MCP 服务地址，留空则工具提示未配置
+    mcp-url: ${SIGNOZ_MCP_URL:http://192.168.2.111:18000/mcp}
+    # 链路查询默认时间窗；查不到时自动退到 fallback-range（两天前的链路只有 7d 才查得到）
+    time-range: ${SIGNOZ_TIME_RANGE:24h}
+    fallback-range: ${SIGNOZ_FALLBACK_RANGE:7d}
+    # 失败链路补查 ERROR/WARN 日志的条数上限
+    log-limit: ${SIGNOZ_LOG_LIMIT:10}
+    # 故障案例知识库目录（相对路径自动锚定项目根）
+    kb-path: ${AGENTFLOW_INCIDENT_KB:./docs/incidents}
   schedule:
     morning-report:
       # 自动晨报机器人：定时生成昨日日报并推送（需配置 GITLAB_TOKEN；推送需配置 Webhook）

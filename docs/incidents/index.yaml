@@ -1,0 +1,26 @@
+# 故障案例索引 —— Agent 检索入口
+#
+# 用途：分析 trace 前先在本文件按 fingerprint 匹配（强/中匹配才打开案例文件读全文），
+#       命中则复用历史根因与处置方案，不重复推理。
+# 维护：由 signoz-analyzing-traces skill 的 Step 5 归档步骤负责同步；手工新增案例时也要同步本文件。
+# 排序：cases 按 last_seen 倒序。
+# 结构说明见同目录 README.md。
+
+version: 1
+updated: 2026-09-10
+cases:
+  - id: INC-20260908-001
+    title: 达梦驱动不支持参数类型导致押金明细查询失败（MyBatis JdbcType 为 null）
+    file: cases/INC-20260908-001-dameng-jdbctype-null.md
+    fingerprint:
+      error_class: "org.apache.ibatis.type.TypeException (dm.jdbc.driver.DMException: Not support this type)"
+      signature: SecurityDepositDetailDao.selectListByQuery
+      span: pay-service / [HTTP] POST 获取账户余额
+      status: HTTP 200 + OTel Error
+      keywords: [JdbcType, 达梦, DMException, MyBatis, security_deposit_detail, 押金, getAccountBalance]
+    confidence: 日志证实
+    occurrences: 1
+    first_seen: '2026-09-08T09:48:45+08:00'
+    last_seen: '2026-09-08T09:48:45+08:00'
+    services: [gateway-service, outp-settle-service, pay-service]
+    owner: 中台研发部
