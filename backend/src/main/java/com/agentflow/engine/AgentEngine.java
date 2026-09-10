@@ -773,11 +773,11 @@ public class AgentEngine {
             if (tr == null) {
                 tr = ToolResult.note("工具 " + s.tool().name() + " 不可用");
             }
-            // 摘要 + 具体数据一并交给后续 LLM 推理/汇总，避免模型只凭一句话编造细节
+            // 摘要 + 具体数据一并交给后续 LLM 推理/汇总，避免模型只凭一句话编造细节（周报素材较长，放宽截断）
             String detail = tr.list() == null || tr.list().isEmpty()
                     ? String.valueOf(tr.result() == null ? Map.of() : tr.result())
                     : String.join("；", tr.list());
-            String summary = (tr.summary() == null ? "" : tr.summary()) + "｜" + truncate(detail, 800);
+            String summary = (tr.summary() == null ? "" : tr.summary()) + "｜" + truncate(detail, 1600);
             // 同名工具可能被规划多次，key 带步骤序号避免相互覆盖
             toolResults.put(s.tool().name() + "#" + index, summary);
 
@@ -945,9 +945,11 @@ public class AgentEngine {
                 + "硬性要求：\n"
                 + "1. 第一行固定为「【" + reportDept + "】个人效能" + kindZh + "」，一字不改\n"
                 + "2. 之后时间窗内每个有提交的日期独占一行，行首日期必须带星期括注，如 2026-09-08（周二），星期从对照表取，日期按先后排列\n"
-                + "3. 同一天的多个提交必须归纳合并为几条工作主线（可带中文圆括号补充细节），主线之间用中文逗号分隔，禁止逐条罗列提交；Merge/分支合并类提交若无实质内容并入相关主线，不必单列\n"
-                + "4. 最后是「【" + planZh + "计划】」单独一行，其下 1~3 条计划，每条独占一行并以“1. ”“2. ”编号（基于已有工作合理延伸，没有依据时只写“1. 待补充”）\n"
-                + "5. 全文必须是纯文本：禁止任何 Markdown 标记（**、#、-、*、` 等），不要“提交人”行、不要总结段、不要任何解释\n"
+                + "3. 同一天的多个提交必须归纳合并为 1~3 条工作主线（可带中文圆括号补充细节），主线之间用中文分号分隔，禁止逐条罗列提交\n"
+                + "4. Merge/分支合并/revert 等同步类提交一律忽略，不得出现在报告中；禁止出现分支名、commit 哈希、代码文件名、命令行符号等工程噪音\n"
+                + "5. 每条主线用中文动词开头（完成/新增/修复/优化/联调/配置），面向汇报对象可读；代码前缀如 feat(todo) 应转述为「待办模块」这类中文模块名\n"
+                + "6. 最后是「【" + planZh + "计划】」单独一行，其下 1~3 条计划，每条独占一行并以“1. ”“2. ”编号（基于已有工作合理延伸，没有依据时只写“1. 待补充”）\n"
+                + "7. 全文必须是纯文本：禁止任何 Markdown 标记（**、#、-、*、` 等），不要“提交人”行、不要总结段、不要任何解释\n"
                 + "报告时间窗：" + scope + "；提交记录中的 MM-dd 对应以下星期（必须使用括注的星期）：\n"
                 + lookup + "\n"
                 + "严禁编造提交记录中没有的工作内容。";
@@ -963,7 +965,7 @@ public class AgentEngine {
                 .replaceAll("(?m)^[-*•]\\s+", "");
     }
 
-    /** 模拟模式的报告模板：按天归组真实提交行，逐行排点，不做推断 */
+    /** 模拟模式的报告模板：按天归组提交，过滤 Merge 噪音、剥离代码前缀后分条中文描述 */
     private String templateReport(Map<String, String> toolResults, boolean weekly, LocalDate ref) {
         // 从工具结果里抽出 "MM-dd HH:mm · 标题" 形式的提交行，按日期归组
         Map<LocalDate, List<String>> byDay = new TreeMap<>();
@@ -982,18 +984,93 @@ public class AgentEngine {
         }
         StringBuilder sb = new StringBuilder();
         sb.append("【").append(reportDept).append("】个人效能").append(weekly ? "周报" : "日报").append("\n");
-        if (byDay.isEmpty()) {
-            sb.append(ref).append("（").append(weekdayZh(ref)).append("）暂无提交记录\n");
-        } else {
-            for (Map.Entry<LocalDate, List<String>> e : byDay.entrySet()) {
-                sb.append(e.getKey()).append("（").append(weekdayZh(e.getKey())).append("）")
-                        .append(String.join("，", e.getValue())).append("\n");
+        for (Map.Entry<LocalDate, List<String>> e : byDay.entrySet()) {
+            String dayLine = summarizeDay(e.getValue());
+            if (dayLine != null) {
+                sb.append(e.getKey()).append("（").append(weekdayZh(e.getKey())).append("）").append(dayLine).append("\n");
             }
         }
+        if (byDay.isEmpty()) {
+            sb.append(ref).append("（").append(weekdayZh(ref)).append("）暂无提交记录\n");
+        }
         sb.append("【").append(weekly ? "下周" : "明日").append("计划】待补充\n");
-        sb.append("\n（模拟模式：由模板基于真实 GitLab 提交记录生成；配置 DEEPSEEK_API_KEY 后将由 LLM 归纳生成完整报告）");
+        sb.append("\n（模拟模式：由模板基于真实 GitLab 提交记录整理生成；配置 DEEPSEEK_API_KEY 后将由 LLM 归纳生成完整报告）");
         return sb.toString();
     }
+
+    /**
+     * 单日提交整理为中文分条描述：过滤 Merge/分支同步噪音，剥离 conventional commit 前缀
+     * （feat(todo): → 待办模块），去重后最多 4 条、其余计入「等 N 项」。
+     */
+    static String summarizeDay(List<String> titles) {
+        List<String> items = new ArrayList<>();
+        int total = 0;
+        for (String raw : titles) {
+            String cleaned = cleanCommitTitle(raw);
+            if (cleaned == null) {
+                continue; // 纯 Merge/同步噪音，不计入
+            }
+            total++;
+            if (!items.contains(cleaned)) {
+                items.add(cleaned);
+            }
+        }
+        if (total == 0) {
+            return null;
+        }
+        List<String> shown = items.subList(0, Math.min(4, items.size()));
+        String line = String.join("；", shown);
+        if (total > shown.size()) {
+            line += "；等共 " + total + " 项提交";
+        }
+        return line;
+    }
+
+    /** 提交标题清洗：Merge/分支同步类返回 null；conventional 前缀转为「模块：描述」 */
+    static String cleanCommitTitle(String title) {
+        if (title == null) {
+            return null;
+        }
+        String t = title.trim();
+        if (t.isEmpty()) {
+            return null;
+        }
+        String lower = t.toLowerCase();
+        if (lower.startsWith("merge ") || lower.startsWith("merged ") || lower.startsWith("revert \"merge")
+                || t.contains(" into '") || t.equals(".")) {
+            return null;
+        }
+        // feat(todo): 描述 / fix: 描述 → 待办模块：描述 / 描述（常见 scope 转中文名，未知的保留原文）
+        java.util.regex.Matcher m = java.util.regex.Pattern
+                .compile("^(feat|fix|docs|style|refactor|perf|test|chore|build|ci|release)(?:\\(([^)]+)\\))?!?:\\s*(.+)$")
+                .matcher(t);
+        if (m.matches()) {
+            String scope = m.group(2);
+            String desc = m.group(3).trim();
+            if (desc.startsWith("Merge") || desc.toLowerCase().contains(" into '")) {
+                return null;
+            }
+            if (scope == null || scope.isBlank()) {
+                return desc;
+            }
+            String scopeZh = SCOPE_ZH.getOrDefault(scope.toLowerCase(), scope);
+            return scopeZh + "：" + desc;
+        }
+        if (lower.startsWith("revert")) {
+            return null;
+        }
+        return t;
+    }
+
+    /** 常见提交 scope 的中文名（报告可读性）；未收录的保留原文 */
+    private static final java.util.Map<String, String> SCOPE_ZH = java.util.Map.of(
+            "todo", "待办模块",
+            "portal", "门户模块",
+            "common", "公共模块",
+            "user", "用户模块",
+            "auth", "认证模块",
+            "report", "报表模块",
+            "flow", "流程模块");
 
     /** 把提交行开头的 MM-dd 匹配到报告时间窗内的具体日期；非提交行返回 null */
     private static LocalDate matchDate(String line, LocalDate today, boolean weekly) {

@@ -97,7 +97,7 @@ public class LlmClient {
         body.put("stream", true);
         // 流式主要用于长文交付物，偏低温度保证格式与事实遵循
         body.put("temperature", 0.5);
-        body.put("max_tokens", 2048);
+        body.put("max_tokens", 8192);
 
         StringBuilder acc = new StringBuilder();
         String lastRawLine = null;
@@ -162,7 +162,7 @@ public class LlmClient {
                 Map.of("role", "user", "content", userPrompt)));
         body.put("stream", false);
         body.put("temperature", jsonMode ? 0.2 : (reasoning ? 0.6 : 0.9));
-        body.put("max_tokens", 2048);
+        body.put("max_tokens", 8192);
         if (jsonMode) {
             body.put("response_format", Map.of("type", "json_object"));
         }
