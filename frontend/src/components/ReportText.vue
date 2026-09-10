@@ -1,35 +1,25 @@
 <template>
-  <div class="rt-lines">
-    <div v-for="(l, i) in lines" :key="i" class="rt-line" :class="l.type">{{ l.text }}</div>
-  </div>
+  <div class="rt-md" v-html="html"></div>
 </template>
 
 <script setup>
 import { computed } from 'vue'
+import { mdToHtml } from '../utils/markdown'
 
-/* 报告类纯文本的结构化排版：识别标题行 / 日期行 / 计划段，其余按正文渲染 */
+/* 内容以 Markdown 预览呈现；报告类文本的日期行 / 【标题】行 / 计划项附加专属样式 */
 const props = defineProps({
   text: { type: String, default: '' },
 })
 
-const lines = computed(() =>
-  (props.text || '')
-    .split('\n')
-    .map((t) => t.trim())
-    .filter(Boolean)
-    .map((text) => ({ text, type: typeOf(text) }))
-)
+const html = computed(() => mdToHtml(props.text, { paraClass }))
 
-function typeOf(l) {
-  if (/^【.+?】/.test(l)) {
-    return l.includes('计划') ? 'plan-head' : 'head'
+function paraClass(t) {
+  if (/^\d{4}-\d{2}-\d{2}（周[一二三四五六日]）/.test(t)) {
+    return 'rt-date'
   }
-  if (/^\d{4}-\d{2}-\d{2}（周[一二三四五六日]）/.test(l)) {
-    return 'date'
+  if (/^【.+?】/.test(t)) {
+    return t.includes('计划') ? 'rt-plan-head' : 'rt-head'
   }
-  if (/^\d+\s*[.、]/.test(l)) {
-    return 'plan-item'
-  }
-  return 'body'
+  return ''
 }
 </script>
