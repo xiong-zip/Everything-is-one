@@ -1,6 +1,6 @@
 <template>
   <div class="app">
-    <ChatHeader :llm="llm" :hasRuns="runs.length > 0" @clear="clearAll()" @history="openHistory()" @tools="toolsOpen = true" @morning="morningOpen = true" @stats="statsOpen = true" />
+    <ChatHeader :llm="llm" :hasRuns="runs.length > 0" @clear="clearAll()" @history="openHistory()" @tools="toolsOpen = true" @morning="morningOpen = true" @stats="statsOpen = true" @db="dbOpen = true" />
 
     <!-- 任务历史抽屉：点击条目即可回放当时的完整执行过程 -->
     <div v-if="historyOpen" class="drawer-mask" @click.self="historyOpen = false">
@@ -63,6 +63,9 @@
     <!-- 效能热力图抽屉 -->
     <StatsDrawer v-if="statsOpen" @close="statsOpen = false" />
 
+    <!-- 数据库连接抽屉 -->
+    <DbDrawer v-if="dbOpen" @close="dbOpen = false" />
+
     <main class="chat-main" ref="scrollEl">
       <div class="chat-scroll">
         <div v-if="runs.length === 0" class="welcome">
@@ -101,6 +104,7 @@ import Composer from './components/Composer.vue'
 import ToolsDrawer from './components/ToolsDrawer.vue'
 import ScheduleDrawer from './components/ScheduleDrawer.vue'
 import StatsDrawer from './components/StatsDrawer.vue'
+import DbDrawer from './components/DbDrawer.vue'
 import { useAgent } from './composables/useAgent'
 
 const API_BASE = '/api/agent'
@@ -115,6 +119,7 @@ let historyLimit = 50
 const toolsOpen = ref(false)
 const morningOpen = ref(false)
 const statsOpen = ref(false)
+const dbOpen = ref(false)
 
 const {
   runs, busy, runAgent, stopRun, clearAll, confirmMode, confirmPlan,

@@ -19,6 +19,9 @@
             工作台<span class="wb-caret" aria-hidden="true">▾</span>
           </summary>
           <div class="wb-list" role="menu">
+            <button class="wb-item" type="button" role="menuitem" @click="wbGo('db')">
+              <span class="wb-ico" aria-hidden="true">🗄</span>数据库连接
+            </button>
             <button class="wb-item" type="button" role="menuitem" @click="wbGo('stats')">
               <span class="wb-ico" aria-hidden="true">▦</span>效能热力图
             </button>
@@ -46,7 +49,7 @@ defineProps({
   llm: { type: Object, required: true },
   hasRuns: { type: Boolean, default: false },
 })
-const emit = defineEmits(['clear', 'history', 'tools', 'morning', 'stats'])
+const emit = defineEmits(['clear', 'history', 'tools', 'morning', 'stats', 'db'])
 
 const wbRef = ref(null)
 

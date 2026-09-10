@@ -32,6 +32,10 @@ agentflow:
   notify:
     # 通用 Webhook（企微/钉钉机器人），晨报生成后推送；留空则只落库不推送
     webhook: ${AGENTFLOW_NOTIFY_WEBHOOK:}
+  db:
+    # 内置 db-architect 数据库透视：Python 解释器命令与脚本目录
+    python-cmd: ${AGENTFLOW_DB_PYTHON:python}
+    scripts-path: ${AGENTFLOW_DB_SCRIPTS:./tools/db-architect/scripts}
   schedule:
     morning-report:
       # 自动晨报机器人：定时生成昨日日报并推送（需配置 GITLAB_TOKEN；推送需配置 Webhook）

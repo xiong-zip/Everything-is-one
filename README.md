@@ -15,6 +15,7 @@
 | **ReAct 自主循环** | `AGENTFLOW_AGENT_MODE=react` 开启：Agent 逐轮决策下一步动作，而非一次规划到底 |
 | **OpenAPI 一键转工具** | 贴一个 Swagger/OpenAPI 文档地址，GET 接口自动变成 Agent 可调用的工具（持久化，重启不丢） |
 | **GitLab 只读查询 + 受控写操作** | 提交/项目/Issue/MR/流水线查询；创建 Issue、评论等低风险写操作需人工确认 |
+| **数据库透视（内置 db-architect）** | 自然语言查库表结构 / DDL / 按中文名找表 / 导出数据为 INSERT / ER 图 / 跨库结构比对，支持达梦、MySQL、Oracle、PostgreSQL；**连接配置在界面里管理**（工作台 → 数据库连接），无需改任何配置文件 |
 | **GitLab 效能日报/周报** | 拉取时间窗内逐条提交，LLM 归纳成固定格式报告，支持「今天/昨天/本周」 |
 | **自动晨报机器人** | 定时（默认工作日 9 点）生成昨日日报并推送到企微/钉钉 Webhook，全程无人值守 |
 | **效能热力图** | 半年 GitLab 提交分布一图可见：总提交、活跃天、最长连续（数据缓存 10 分钟） |
@@ -155,6 +156,7 @@ java -jar target/agentflow-backend-0.0.1-SNAPSHOT.jar   # 运行 jar
 | POST | `/api/agent/run/{taskId}/confirm` | confirm 模式回传确认/编辑后的计划 |
 | GET/DELETE | `/api/agent/history` `/{id}` | 任务历史列表（支持 `keyword` 关键词搜索）/ 回放 / 删除 / 清空 |
 | GET | `/api/stats/heatmap?days=182` | GitLab 提交热力图数据（缓存 10 分钟） |
+| GET/POST/DELETE | `/api/dbprofiles` `/{name}` `/{name}/test` | 数据库连接管理（保存/删除/测试连接） |
 | GET | `/api/tools` | 已注册工具列表（含动态工具、写操作标记） |
 | POST | `/api/tools/openapi` | 从 OpenAPI/Swagger 文档导入工具（body: `{"url": "..."}`） |
 | DELETE | `/api/tools/{name}` | 删除动态工具（内置工具不可删） |
