@@ -107,9 +107,14 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
   width: 34px; height: 34px; border-radius: 11px;
   display: inline-flex; align-items: center; justify-content: center;
   background: linear-gradient(135deg, var(--mint-400), var(--mint-600));
-  color: #fff;
+  color: #fff; border: none; padding: 0; cursor: pointer;
   box-shadow: 0 4px 14px rgba(16, 185, 129, 0.35);
+  transition: transform 0.3s, box-shadow 0.3s;
 }
+.brand-mark svg { transition: transform 0.45s cubic-bezier(0.34, 1.56, 0.64, 1); }
+.brand-mark:hover { transform: scale(1.08); box-shadow: 0 6px 22px rgba(16, 185, 129, 0.55); }
+.brand-mark:hover svg { transform: rotate(90deg); }
+.brand-mark:active { transform: scale(0.94); }
 .brand-name { font-weight: 800; font-size: 17px; letter-spacing: 0.01em; }
 .brand-sub {
   font-size: 11.5px; color: var(--mint-700);
@@ -368,6 +373,10 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
   cursor: pointer; max-width: 190px;
 }
 .db-select:has(option:checked[value=""]) { color: var(--ink-3); background: none; border-color: var(--line-strong); }
+
+/* ---------- GitLab 账户抽屉 ---------- */
+.gl-hint { margin-top: 10px; font-size: 11px; color: var(--ink-3); line-height: 1.7; }
+.gl-hint b { color: var(--ink-2); font-weight: 600; }
 
 /* ---------- 未命中候选卡 ---------- */
 .clarify-card { border: 1px solid #f2dcae; background: var(--amber-soft); border-radius: var(--radius); padding: 12px 14px; margin: 12px 0; }

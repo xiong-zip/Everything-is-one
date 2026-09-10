@@ -1,6 +1,6 @@
 <template>
   <div class="app">
-    <ChatHeader :llm="llm" :hasRuns="runs.length > 0" @clear="clearAll()" @history="openHistory()" @tools="toolsOpen = true" @morning="morningOpen = true" @stats="statsOpen = true" @db="dbOpen = true" />
+    <ChatHeader :llm="llm" :hasRuns="runs.length > 0" @clear="clearAll()" @history="openHistory()" @tools="toolsOpen = true" @morning="morningOpen = true" @stats="statsOpen = true" @db="dbOpen = true" @gitlab="gitlabOpen = true" />
 
     <!-- 任务历史抽屉：左侧滑出，点击条目即可回放当时的完整执行过程 -->
     <div v-if="historyOpen" class="drawer-mask" @click.self="historyOpen = false">
@@ -66,6 +66,9 @@
     <!-- 数据库连接抽屉 -->
     <DbDrawer v-if="dbOpen" @close="dbOpen = false" @active-changed="dbActive = $event" />
 
+    <!-- GitLab 账户抽屉：维护 Access Token -->
+    <GitlabDrawer v-if="gitlabOpen" @close="gitlabOpen = false" />
+
     <main class="chat-main" ref="scrollEl">
       <div class="chat-scroll">
         <div v-if="runs.length === 0" class="welcome">
@@ -105,6 +108,7 @@ import ToolsDrawer from './components/ToolsDrawer.vue'
 import ScheduleDrawer from './components/ScheduleDrawer.vue'
 import StatsDrawer from './components/StatsDrawer.vue'
 import DbDrawer from './components/DbDrawer.vue'
+import GitlabDrawer from './components/GitlabDrawer.vue'
 import { useAgent } from './composables/useAgent'
 
 const API_BASE = '/api/agent'
@@ -120,6 +124,7 @@ const toolsOpen = ref(false)
 const morningOpen = ref(false)
 const statsOpen = ref(false)
 const dbOpen = ref(false)
+const gitlabOpen = ref(false)
 const dbProfiles = ref([])
 const dbActive = ref('')
 

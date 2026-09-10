@@ -24,14 +24,23 @@ public class GitLabWriteTool implements Tool {
     private final RestClient restClient;
     private final ObjectMapper mapper = new ObjectMapper();
     private final String baseUrl;
-    private final String token;
+    private final String envToken;
+    private final GitLabAccountStore accountStore;
 
     public GitLabWriteTool(ToolHttpClient toolHttpClient,
+                           GitLabAccountStore accountStore,
                            @Value("${agentflow.gitlab.base-url:http://gitlab.zoesoft.com.cn}") String baseUrl,
                            @Value("${agentflow.gitlab.token:${GITLAB_TOKEN:}}") String token) {
         this.restClient = toolHttpClient.restClient();
+        this.accountStore = accountStore;
         this.baseUrl = baseUrl.replaceAll("/+$", "");
-        this.token = token == null ? "" : token.trim();
+        this.envToken = token == null ? "" : token.trim();
+    }
+
+    /** 当前生效 token：「GitLab 账户」配置的账户优先，未配置时回退 .env 的 GITLAB_TOKEN */
+    private String currentToken() {
+        String t = accountStore.activeToken();
+        return t == null || t.isBlank() ? envToken : t.trim();
     }
 
     @Override
@@ -58,8 +67,8 @@ public class GitLabWriteTool implements Tool {
 
     @Override
     public ToolResult execute(Map<String, Object> args, String userCommand) {
-        if (token.isEmpty()) {
-            return ToolResult.note("未配置 GITLAB_TOKEN，无法执行 GitLab 写操作");
+        if (currentToken().isEmpty()) {
+            return ToolResult.note("未配置 GitLab Access Token（右上角「工作台 → GitLab 账户」添加）");
         }
         String op = str(args.get("op"));
         String project = str(args.get("project"));
@@ -135,7 +144,7 @@ public class GitLabWriteTool implements Tool {
     private JsonNode getJson(String path) throws Exception {
         String body = restClient.get()
                 .uri(baseUrl + path)
-                .header("PRIVATE-TOKEN", token)
+                .header("PRIVATE-TOKEN", currentToken())
                 .retrieve()
                 .body(String.class);
         return mapper.readTree(body == null ? "[]" : body);
@@ -144,7 +153,7 @@ public class GitLabWriteTool implements Tool {
     private JsonNode postJson(String path, Object body) throws Exception {
         String resp = restClient.post()
                 .uri(baseUrl + path)
-                .header("PRIVATE-TOKEN", token)
+                .header("PRIVATE-TOKEN", currentToken())
                 .contentType(MediaType.APPLICATION_JSON)
                 .body(mapper.writeValueAsString(body))
                 .retrieve()

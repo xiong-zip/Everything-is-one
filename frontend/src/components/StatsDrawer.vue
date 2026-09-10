@@ -11,7 +11,7 @@
       <div class="hm-body">
         <div v-if="loading" class="hd-empty">统计中…</div>
         <div v-else-if="!data.enabled" class="hd-empty">
-          未配置 GITLAB_TOKEN<br /><small>在 .env 中配置后即可查看提交热力图</small>
+          未配置 GitLab 账户<br /><small>在「工作台 → GitLab 账户」添加 Access Token 后即可查看</small>
         </div>
         <template v-else-if="data.error">
           <div class="hd-empty">{{ data.error }}</div>

@@ -3,6 +3,7 @@ package com.agentflow.engine;
 import com.agentflow.llm.LlmClient;
 import com.agentflow.model.PlanStep;
 import com.agentflow.model.ToolCall;
+import com.agentflow.tool.GitLabTool;
 import com.agentflow.tool.StockTool;
 import com.agentflow.tool.Tool;
 import com.agentflow.tool.ToolRegistry;
@@ -452,6 +453,10 @@ public class AgentEngine {
 
     /** 规划 + 意图一次 LLM 调用完成；失败回退启发式 */
     private PlanOutcome plan(String command, String histBlock) {
+        // GitLab 工作报告是专线：时间窗必须由代码解析（LLM 会自行编造日期参数，曾把年份写错），直接走启发式规划
+        if (detectReportKind(command) != null) {
+            return new PlanOutcome(heuristicIntent(command), heuristicPlan(command));
+        }
         if (llmClient.isEnabled()) {
             for (int attempt = 0; attempt < 2; attempt++) {
                 try {
@@ -680,10 +685,10 @@ public class AgentEngine {
         String reportKind = detectReportKind(command);
         if (reportKind != null) {
             boolean weekly = "weekly".equals(reportKind);
-            String dayArg = weekly ? "week"
-                    : (command.contains("昨天") || command.contains("昨日")) ? "yesterday" : "today";
-            steps.add(PlanStep.tool("拉取我的 GitLab 提交记录（" + (weekly ? "本周" : dayArg.equals("yesterday") ? "昨天" : "今天") + "）",
-                    new ToolCall("gitlab.query", Map.of("type", "mine", "day", dayArg))));
+            GitLabTool.Window win = reportWindow(command, weekly);
+            steps.add(PlanStep.tool("拉取我的 GitLab 提交记录（" + win.scopeZh() + "）",
+                    new ToolCall("gitlab.query", Map.of("type", "mine",
+                            "since", win.since().toString(), "until", win.until().toString()))));
             steps.add(PlanStep.think("归纳提交记录 · 提炼工作主线"));
             steps.add(PlanStep.write("生成工作" + (weekly ? "周报" : "日报")));
             return steps;
@@ -821,14 +826,18 @@ public class AgentEngine {
 
         if ("write".equals(s.kind())) {
             String reportKind = detectReportKind(command);
-            LocalDate refDate = reportRefDate(command);
-            String system = reportKind != null ? reportWriteSystem(reportKind, refDate) : WRITE_SYSTEM;
+            GitLabTool.Window reportWin = reportKind != null
+                    ? reportWindow(command, "weekly".equals(reportKind)) : null;
+            String system = reportWin != null ? reportWriteSystem(reportKind, reportWin) : WRITE_SYSTEM;
             String userPrompt = "用户指令：" + command + "\n意图：" + intent.summary()
                     + "\n已获得的工具结果：\n" + toolSummary(toolResults) + histBlock
                     + "\n请生成最终成品内容。";
 
             String content = null;
-            if (llmClient.isEnabled()) {
+            // 报告时间窗内没有提交素材时不走 LLM（避免自由发挥破坏固定格式），直接用固定格式模板
+            boolean reportHasMaterial = reportWin == null
+                    || toolResults.values().stream().anyMatch(v -> v != null && v.contains("共提交"));
+            if (llmClient.isEnabled() && reportHasMaterial) {
                 try {
                     // 流式生成：增量片段实时推送，最终以完整 result 事件为准；取消时回调内抛出中断信号
                     content = llmClient.chatStream(system, userPrompt, piece -> {
@@ -853,7 +862,7 @@ public class AgentEngine {
             boolean llmGenerated = content != null && !content.isBlank();
             if (!llmGenerated) {
                 content = reportKind != null
-                        ? templateReport(toolResults, "weekly".equals(reportKind), refDate)
+                        ? templateReport(toolResults, "weekly".equals(reportKind), reportWin)
                         : templateWrite(command, intent, toolResults);
             }
             if (reportKind != null) {
@@ -908,24 +917,32 @@ public class AgentEngine {
 
     /* ================= GitLab 工作报告 ================= */
 
-    /** 报告基准日：指令提到昨天/昨日（晨报场景）用昨天，否则今天 */
-    private static LocalDate reportRefDate(String command) {
-        return command != null && (command.contains("昨天") || command.contains("昨日"))
-                ? LocalDate.now().minusDays(1)
-                : LocalDate.now();
+    /**
+     * 报告时间窗：识别指令中的时间词（今天/昨天/本周/上周/近N天/具体日期或区间）；
+     * 未识别时日报=当天（晨报指令带「昨天」会被识别）、周报=本周兜底。
+     */
+    private static GitLabTool.Window reportWindow(String command, boolean weekly) {
+        GitLabTool.Window w = GitLabTool.parseWindow(command);
+        if (w != null) {
+            return w;
+        }
+        LocalDate today = LocalDate.now();
+        return weekly
+                ? GitLabTool.window(today.minusDays(6), today, "本周")
+                : GitLabTool.window(today, today, "今天");
     }
 
     /** 报告生成 prompt：给出行结构示例 + 日期星期对照表 + 硬性约束，按「日期（星期）+ 当日工作主线」逐行排点 */
-    private String reportWriteSystem(String kind, LocalDate ref) {
+    private String reportWriteSystem(String kind, GitLabTool.Window w) {
         boolean weekly = "weekly".equals(kind);
         String kindZh = weekly ? "周报" : "日报";
         String planZh = weekly ? "下周" : "明日";
-        String scope = weekly
-                ? ref.minusDays(6) + "（" + weekdayZh(ref.minusDays(6)) + "）至 " + ref + "（" + weekdayZh(ref) + "）"
-                : ref + "（" + weekdayZh(ref) + "）";
+        String scope = w.since().equals(w.until())
+                ? w.since() + "（" + weekdayZh(w.since()) + "）"
+                : w.since() + "（" + weekdayZh(w.since()) + "）至 " + w.until() + "（" + weekdayZh(w.until()) + "）";
         // 模型不会算星期，直接给对照表
         StringBuilder lookup = new StringBuilder();
-        for (LocalDate d = weekly ? ref.minusDays(6) : ref; !d.isAfter(ref); d = d.plusDays(1)) {
+        for (LocalDate d = w.since(); !d.isAfter(w.until()); d = d.plusDays(1)) {
             if (lookup.length() > 0) {
                 lookup.append("，");
             }
@@ -972,7 +989,7 @@ public class AgentEngine {
     }
 
     /** 模拟模式的报告模板：按天归组提交，过滤 Merge 噪音、剥离代码前缀后逐条中文分点 */
-    private String templateReport(Map<String, String> toolResults, boolean weekly, LocalDate ref) {
+    private String templateReport(Map<String, String> toolResults, boolean weekly, GitLabTool.Window w) {
         // 从工具结果里抽出 "MM-dd HH:mm · 标题" 形式的提交行，按日期归组
         Map<LocalDate, List<String>> byDay = new TreeMap<>();
         for (String v : toolResults.values()) {
@@ -980,7 +997,7 @@ public class AgentEngine {
             String detail = bar >= 0 ? v.substring(bar + 1) : v;
             for (String line : detail.split("；")) {
                 String t = line.trim();
-                LocalDate d = matchDate(t, ref, weekly);
+                LocalDate d = matchDate(t, w.since(), w.until());
                 if (d != null) {
                     int dot = t.indexOf('·');
                     String title = dot >= 0 ? t.substring(dot + 1).trim() : t;
@@ -1004,10 +1021,18 @@ public class AgentEngine {
             }
         }
         if (!any) {
-            sb.append(ref).append("（").append(weekdayZh(ref)).append("）暂无提交记录\n");
+            // 与有数据时同构：单日一行日期，区间给起止两天
+            if (w.since().equals(w.until())) {
+                sb.append(w.since()).append("（").append(weekdayZh(w.since())).append("）暂无提交记录\n");
+            } else {
+                sb.append(w.since()).append("（").append(weekdayZh(w.since())).append("）至 ")
+                        .append(w.until()).append("（").append(weekdayZh(w.until())).append("）暂无提交记录\n");
+            }
         }
         sb.append("【").append(weekly ? "下周" : "明日").append("计划】\n1. 待补充\n");
-        sb.append("\n（模拟模式：由模板基于真实 GitLab 提交记录整理生成；配置 DEEPSEEK_API_KEY 后将由 LLM 归纳生成完整报告）");
+        if (!llmClient.isEnabled()) {
+            sb.append("\n（模拟模式：由模板基于真实 GitLab 提交记录整理生成；配置 DEEPSEEK_API_KEY 后将由 LLM 归纳生成完整报告）");
+        }
         return sb.toString();
     }
 
@@ -1081,14 +1106,12 @@ public class AgentEngine {
             "flow", "流程模块");
 
     /** 把提交行开头的 MM-dd 匹配到报告时间窗内的具体日期；非提交行返回 null */
-    private static LocalDate matchDate(String line, LocalDate today, boolean weekly) {
+    private static LocalDate matchDate(String line, LocalDate since, LocalDate until) {
         if (line.length() < 5 || line.charAt(2) != '-') {
             return null;
         }
         String mmdd = line.substring(0, 5);
-        int span = weekly ? 6 : 0;
-        for (int i = 0; i <= span; i++) {
-            LocalDate d = today.minusDays(i);
+        for (LocalDate d = since; !d.isAfter(until); d = d.plusDays(1)) {
             if (String.format("%02d-%02d", d.getMonthValue(), d.getDayOfMonth()).equals(mmdd)) {
                 return d;
             }

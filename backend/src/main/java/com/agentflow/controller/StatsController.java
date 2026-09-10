@@ -38,9 +38,9 @@ public class StatsController {
         }
         Map<String, Object> out = new LinkedHashMap<>();
         if (!gitLabTool.isConfigured()) {
+            // 未配置不缓存：刚保存账户后立即就能看到热力图
             out.put("enabled", false);
             out.put("days", days);
-            cache(out, days);
             return out;
         }
         try {
