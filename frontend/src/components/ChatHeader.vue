@@ -14,8 +14,14 @@
       </div>
       <div class="header-tools">
         <span class="llm-badge" :class="llm.cls">{{ llm.text }}</span>
+        <button class="clear-btn history-btn history-icon" type="button" title="任务历史" @click="$emit('history')">
+          <svg viewBox="0 0 20 20" width="13" height="13" fill="none" aria-hidden="true" style="vertical-align:-2px">
+            <path d="M10 4v5l3.5 2" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+            <circle cx="10" cy="10" r="7.2" stroke="currentColor" stroke-width="1.8"/>
+          </svg>历史
+        </button>
         <details ref="wbRef" class="wb-menu">
-          <summary class="clear-btn wb-summary" title="效能 / 晨报 / 工具 / 历史">
+          <summary class="clear-btn wb-summary" title="数据库 / 效能 / 晨报 / 工具">
             工作台<span class="wb-caret" aria-hidden="true">▾</span>
           </summary>
           <div class="wb-list" role="menu">
@@ -30,9 +36,6 @@
             </button>
             <button class="wb-item" type="button" role="menuitem" @click="wbGo('tools')">
               <span class="wb-ico" aria-hidden="true">⚙</span>工具管理
-            </button>
-            <button class="wb-item" type="button" role="menuitem" @click="wbGo('history')">
-              <span class="wb-ico" aria-hidden="true">◷</span>任务历史
             </button>
           </div>
         </details>

@@ -2,9 +2,9 @@
   <div class="app">
     <ChatHeader :llm="llm" :hasRuns="runs.length > 0" @clear="clearAll()" @history="openHistory()" @tools="toolsOpen = true" @morning="morningOpen = true" @stats="statsOpen = true" @db="dbOpen = true" />
 
-    <!-- 任务历史抽屉：点击条目即可回放当时的完整执行过程 -->
+    <!-- 任务历史抽屉：左侧滑出，点击条目即可回放当时的完整执行过程 -->
     <div v-if="historyOpen" class="drawer-mask" @click.self="historyOpen = false">
-      <aside class="history-drawer" role="dialog" aria-label="任务历史">
+      <aside class="history-drawer hd-left" role="dialog" aria-label="任务历史">
         <div class="hd-head">
           <h3>任务历史</h3>
           <div class="hd-actions">

@@ -751,6 +751,17 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
   display: flex; flex-direction: column;
   animation: drawer-in 0.24s var(--ease-out);
 }
+/* 左侧滑出变体（任务历史）：与主体对话流贴合，展开时不遮挡右侧内容 */
+.history-drawer.hd-left {
+  left: 0; right: auto;
+  width: min(360px, 90vw);
+  box-shadow: 12px 0 40px rgba(18, 63, 54, 0.16);
+  animation: drawer-in-left 0.24s var(--ease-out);
+}
+@keyframes drawer-in-left {
+  from { transform: translateX(-40px); opacity: 0; }
+  to { transform: none; opacity: 1; }
+}
 @keyframes drawer-in {
   from { transform: translateX(40px); opacity: 0; }
   to { transform: none; opacity: 1; }
