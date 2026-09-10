@@ -11,7 +11,7 @@
           <span class="step-title">{{ step.title }}</span>
           <span class="step-state">
             <span class="dot"></span>
-            <span>{{ stateText }}</span>
+            <span>{{ stateText }}{{ step.durationMs ? ' · ' + fmtDuration(step.durationMs) : '' }}</span>
           </span>
         </div>
         <div class="step-detail">
@@ -66,6 +66,10 @@ const icon = computed(() =>
 const stateText = computed(() =>
   props.step.state === 'running' ? '执行中' : props.step.state === 'done' ? '完成' : '等待中'
 )
+
+function fmtDuration(ms) {
+  return ms < 1000 ? ms + 'ms' : (ms / 1000).toFixed(1) + 's'
+}
 
 const lastReason = computed(() => {
   const rs = props.step.reasons

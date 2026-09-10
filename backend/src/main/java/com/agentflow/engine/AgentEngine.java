@@ -326,12 +326,15 @@ public class AgentEngine {
         RunRecorder recorder = new RunRecorder(session);
         String command = session.command();
         String histBlock = historyBlock(session.history());
+        // 提到 try 外：取消收尾时仍可引用已产出的部分结果
+        List<PlanStep> steps = null;
+        int total = 0;
+        Map<String, String> toolResults = new LinkedHashMap<>();
+        String writeOutput = null;
         try {
             /* 阶段一+二：意图分析与任务规划（LLM 模式一次调用同时完成；confirm 模式推送计划等待放行；ReAct 跳过预规划） */
             recorder.send("phase", map("name", "understand", "state", "active"));
             recorder.send("status", map("text", "正在解析指令并规划任务…", "cls", "is-running"));
-            List<PlanStep> steps = null;
-            int total = 0;
             Intent intent;
             if (reactEnabled()) {
                 intent = heuristicIntent(command);
@@ -362,8 +365,6 @@ public class AgentEngine {
 
             /* 阶段三：逐步执行（同 group 的连续 tool 步并行；ReAct 模式逐轮决策） */
             recorder.send("phase", map("name", "execute", "state", "active"));
-            Map<String, String> toolResults = new LinkedHashMap<>();
-            String writeOutput = null;
             if (steps == null) {
                 int stepIdx = 0;
                 boolean wrote = false;
@@ -423,8 +424,14 @@ public class AgentEngine {
             recorder.finish("done", finalOut[0], finalOut[1]);
             completeEmitter(session);
         } catch (CancelledException ex) {
+            // 取消也发 done 事件：携带已产出的部分内容与 cancelled 标记，前端出收尾卡
             recorder.send("status", map("text", "已手动停止", "cls", "is-done"));
-            recorder.finish("cancelled", "已手动停止", "");
+            recorder.send("done", map(
+                    "summary", "已手动停止",
+                    "output", writeOutput == null ? "" : writeOutput,
+                    "meta", List.of("已手动停止 · 已完成的部分保留如下"),
+                    "cancelled", true));
+            recorder.finish("cancelled", "已手动停止", writeOutput == null ? "" : writeOutput);
             completeEmitter(session);
         } catch (Exception ex) {
             log.error("任务执行异常", ex);

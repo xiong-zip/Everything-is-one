@@ -1,6 +1,6 @@
 <template>
   <div class="app">
-    <ChatHeader :llm="llm" :hasRuns="runs.length > 0" :confirmMode="confirmMode" @clear="clearAll()" @history="openHistory()" @toggle-confirm="confirmMode = !confirmMode" @tools="toolsOpen = true" @morning="morningOpen = true" @stats="statsOpen = true" />
+    <ChatHeader :llm="llm" :hasRuns="runs.length > 0" @clear="clearAll()" @history="openHistory()" @tools="toolsOpen = true" @morning="morningOpen = true" @stats="statsOpen = true" />
 
     <!-- 任务历史抽屉：点击条目即可回放当时的完整执行过程 -->
     <div v-if="historyOpen" class="drawer-mask" @click.self="historyOpen = false">
@@ -89,7 +89,7 @@
       </div>
     </main>
 
-    <Composer :busy="busy" :examples="examples" :prefill="prefill" @send="runAgent" @stop="stopRun" />
+    <Composer :busy="busy" :examples="examples" :prefill="prefill" :confirmMode="confirmMode" @send="runAgent" @stop="stopRun" @toggle-confirm="confirmMode = !confirmMode" />
   </div>
 </template>
 

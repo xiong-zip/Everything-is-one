@@ -35,7 +35,16 @@
             @click="command = s.command"
           >{{ s.short }}</button>
         </div>
-        <span class="composer-hint">Enter 执行 · Shift+Enter 换行 · 任务不限示例，任意指令均可</span>
+        <div class="composer-right">
+          <button
+            class="confirm-toggle-sm"
+            :class="{ on: confirmMode }"
+            type="button"
+            :title="confirmMode ? '确认模式已开启：任务规划后先确认再执行' : '确认模式已关闭：规划后直接执行'"
+            @click="$emit('toggle-confirm')"
+          >{{ confirmMode ? '🛡 确认模式' : '确认模式' }}</button>
+          <span class="composer-hint">Enter 执行 · Shift+Enter 换行</span>
+        </div>
       </div>
     </div>
   </div>
@@ -48,9 +57,10 @@ const props = defineProps({
   busy: { type: Boolean, default: false },
   examples: { type: Array, default: () => [] },
   prefill: { type: Object, default: () => ({ command: '', nonce: 0 }) },
+  confirmMode: { type: Boolean, default: false },
 })
 
-const emit = defineEmits(['send', 'stop'])
+const emit = defineEmits(['send', 'stop', 'toggle-confirm'])
 
 const command = ref('')
 const inputEl = ref(null)

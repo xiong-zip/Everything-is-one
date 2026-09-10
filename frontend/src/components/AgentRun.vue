@@ -7,6 +7,11 @@
       <span class="agent-status" :class="run.status.cls" role="status" aria-live="polite">● {{ run.status.text }}</span>
     </div>
 
+    <!-- 总进度条：按已完成步数推进，运行中有流光效果 -->
+    <div class="run-progress" :class="{ done: run.final.visible }" aria-hidden="true">
+      <div class="run-progress-fill" :style="{ width: progressPct + '%' }"></div>
+    </div>
+
     <div class="agent-body">
       <!-- 执行过程：运行中完整展示，完成后默认折叠只留任务汇总，可点开回看 -->
       <button
@@ -55,17 +60,20 @@
       <!-- 最终答案 -->
       <div class="final-panel" v-if="run.final.visible">
         <div class="fp-head">
-          <span class="fp-ico" aria-hidden="true">◈</span>
+          <span class="fp-ico" :class="{ cancelled: run.final.cancelled }" aria-hidden="true">{{ run.final.cancelled ? '⤼' : '◈' }}</span>
           <div>
-            <h4>任务汇总</h4>
+            <h4>{{ run.final.cancelled ? '任务已停止' : '任务汇总' }}</h4>
             <p>{{ run.final.summary }}</p>
           </div>
+          <span v-if="run.final.cancelled" class="fp-cancelled-badge">已手动停止</span>
         </div>
-        <div class="fp-output">{{ run.final.output }}</div>
+        <ReportText v-if="run.final.output" :text="run.final.output" class="fp-report" />
+        <div v-else class="fp-empty">停止时还没有产出内容，已完成的步骤可在上方回看</div>
         <div class="fp-meta">
           <span v-for="(m, i) in run.final.meta" :key="i">{{ m }}</span>
+          <span v-if="run.final.durationMs" class="fp-duration">耗时 {{ fmtDuration(run.final.durationMs) }}</span>
         </div>
-        <div class="fp-actions">
+        <div class="fp-actions" v-if="run.final.output">
           <button class="btn btn-ghost copy-btn" type="button" @click="copyFinal">
             {{ copied ? '✓ 已复制' : '复制结果' }}
           </button>
@@ -82,6 +90,7 @@
 import { computed, ref } from 'vue'
 import StepCard from './StepCard.vue'
 import PlanApproval from './PlanApproval.vue'
+import ReportText from './ReportText.vue'
 
 const props = defineProps({
   run: { type: Object, required: true },
@@ -91,6 +100,18 @@ defineEmits(['plan-confirm', 'plan-cancel'])
 const phaseList = { understand: '意图分析', plan: '任务规划', execute: '逐步执行', merge: '结果汇总' }
 const visibleSteps = computed(() => props.run.steps.filter(Boolean))
 const copied = ref(false)
+
+/* 总进度：已完成步数 / 计划总步数（交付后固定 100%） */
+const progressPct = computed(() => {
+  if (props.run.final.visible) return 100
+  const done = visibleSteps.value.filter((s) => s.state === 'done').length
+  const total = Math.max(props.run.totalSteps, done, 1)
+  return Math.round((done / total) * 100)
+})
+
+function fmtDuration(ms) {
+  return ms < 1000 ? ms + 'ms' : (ms / 1000).toFixed(1) + 's'
+}
 
 async function copyFinal() {
   const text = props.run.final.output

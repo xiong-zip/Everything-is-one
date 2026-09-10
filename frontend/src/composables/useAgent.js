@@ -25,6 +25,8 @@ function newRun(id, command, replayed = false) {
     taskId: null, // 后端任务 id（confirm 取消/确认用）
     lastSeq: -1, // 已收到的最大事件序号，断线重连时从这之后补发
     stopped: false, // 用户主动停止（与连接异常区分）
+    startedAt: Date.now(), // 本轮开始时间（计算总耗时；回放不计时）
+    totalSteps: 0, // 规划的总步数（进度条用）
     status: { text: replayed ? '读取历史记录…' : '正在连接后端…', cls: replayed ? 'is-done' : 'is-running' },
     intent: null, // { summary, entities: [] }
     phases: { understand: '', plan: '', execute: '', merge: '' },
@@ -32,7 +34,7 @@ function newRun(id, command, replayed = false) {
     planProposal: null, // confirm 模式：{ steps, waiting, confirmed }
     confirmResolve: null, // 等待用户确认计划的 Promise resolver
     processExpanded: true, // 执行过程折叠态：完成后默认收起
-    final: { visible: false, summary: '', output: '', meta: [] },
+    final: { visible: false, cancelled: false, summary: '', output: '', meta: [], durationMs: 0 },
   }
 }
 
@@ -93,6 +95,7 @@ export function useAgent() {
         run.intent = { summary: d.summary || '', entities: d.entities || [] }
       },
       step(d) {
+        if (d.total > run.totalSteps) run.totalSteps = d.total
         run.steps[d.index] = {
           index: d.index,
           kind: d.kind,
@@ -103,12 +106,17 @@ export function useAgent() {
           reasons: [],
           reasonExpanded: true,
           result: null,
+          durationMs: 0,
         }
       },
       'step-state'(d) {
         const st = run.steps[d.index]
         if (!st) return
+        if (d.state === 'running' && !instant) st.startedMs = Date.now()
         st.state = d.state
+        if (d.state === 'done' && st.startedMs) {
+          st.durationMs = Date.now() - st.startedMs
+        }
         // 思考步完成后默认折叠推理过程，只保留结论行，可手动展开
         if (d.state === 'done' && st.kind === 'think' && st.reasons.length) {
           st.reasonExpanded = false
@@ -148,6 +156,8 @@ export function useAgent() {
         run.final.summary = d.summary
         run.final.output = d.output
         run.final.meta = d.meta || []
+        run.final.cancelled = !!d.cancelled
+        if (!instant) run.final.durationMs = Date.now() - run.startedAt
         run.final.visible = true
         // 任务已交付，执行过程默认折叠，只展示任务汇总
         run.processExpanded = false
@@ -254,7 +264,7 @@ export function useAgent() {
     }
   }
 
-  /* ---------- 手动停止：通知后端取消 + 中断本地流读取 ---------- */
+  /* ---------- 手动停止：通知后端取消；稍等收尾 done 事件（含部分产出）再断流 ---------- */
   async function stopRun() {
     if (!activeTaskId) return
     const run = runs.value[runs.value.length - 1]
@@ -265,7 +275,10 @@ export function useAgent() {
     try {
       await fetch(`${API_BASE}/cancel/${activeTaskId}`, { method: 'POST' })
     } catch { /* 后端不可达时仅本地中止 */ }
-    if (activeAbort) activeAbort.abort()
+    // 服务端在最近的检查点发完收尾事件后会自然收流；2 秒兜底强制断开
+    setTimeout(() => {
+      if (activeAbort) activeAbort.abort()
+    }, 2000)
   }
 
   /* ---------- confirm 模式：回传确认/编辑后的计划 ---------- */
