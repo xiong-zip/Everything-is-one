@@ -933,19 +933,25 @@ public class AgentEngine {
         }
         String sample = weekly
                 ? "【" + reportDept + "】个人效能周报\n"
-                  + "2026-09-07（周一）数据权限功能开发（权限配置组件开发，UI 调整），运行态组件 UI 调整\n"
-                  + "2026-09-08（周二）通用记录操作中心开发（通用操作记录查询组件开发），数据权限联调\n"
+                  + "2026-09-07（周一）\n"
+                  + "1. 完成数据权限功能开发（权限配置组件开发与 UI 调整）\n"
+                  + "2. 调整运行态组件 UI\n"
+                  + "2026-09-08（周二）\n"
+                  + "1. 开发通用记录操作中心（通用操作记录查询组件）\n"
+                  + "2. 完成数据权限联调\n"
                   + "【下周计划】\n1. 跟进数据权限合入后的联调验证"
                 : "【" + reportDept + "】个人效能日报\n"
-                  + "2026-09-08（周二）数据权限功能开发（权限配置组件开发，UI 调整），运行态组件 UI 调整\n"
+                  + "2026-09-08（周二）\n"
+                  + "1. 完成数据权限功能开发（权限配置组件开发与 UI 调整）\n"
+                  + "2. 调整运行态组件 UI\n"
                   + "【明日计划】\n1. 跟进数据权限合入后的联调验证";
         return "你是 AgentFlow 的工作报告生成模块。请基于提供的 Git 提交记录，严格按下面的行结构输出工作报告。\n"
                 + "输出结构示例（示例中的日期与内容仅示意格式，必须替换为提交记录中的真实工作，禁止照抄示例文字）：\n"
                 + sample + "\n"
                 + "硬性要求：\n"
                 + "1. 第一行固定为「【" + reportDept + "】个人效能" + kindZh + "」，一字不改\n"
-                + "2. 之后时间窗内每个有提交的日期独占一行，行首日期必须带星期括注，如 2026-09-08（周二），星期从对照表取，日期按先后排列\n"
-                + "3. 同一天的多个提交必须归纳合并为 1~3 条工作主线（可带中文圆括号补充细节），主线之间用中文分号分隔，禁止逐条罗列提交\n"
+                + "2. 时间窗内每个有提交的日期独占一行，该行只写「日期（星期）」，如 2026-09-08（周二），星期从对照表取，日期按先后排列，日期行不写任何工作内容\n"
+                + "3. 日期行下方逐条列出当天工作：每条独占一行，以“1. ”“2. ”“3. ”编号且每天从 1 重新开始；同一天归纳为 2~5 条工作主线，可带中文圆括号补充细节，禁止逐条罗列原始提交\n"
                 + "4. Merge/分支合并/revert 等同步类提交一律忽略，不得出现在报告中；禁止出现分支名、commit 哈希、代码文件名、命令行符号等工程噪音\n"
                 + "5. 每条主线用中文动词开头（完成/新增/修复/优化/联调/配置），面向汇报对象可读；代码前缀如 feat(todo) 应转述为「待办模块」这类中文模块名\n"
                 + "6. 最后是「【" + planZh + "计划】」单独一行，其下 1~3 条计划，每条独占一行并以“1. ”“2. ”编号（基于已有工作合理延伸，没有依据时只写“1. 待补充”）\n"
@@ -965,7 +971,7 @@ public class AgentEngine {
                 .replaceAll("(?m)^[-*•]\\s+", "");
     }
 
-    /** 模拟模式的报告模板：按天归组提交，过滤 Merge 噪音、剥离代码前缀后分条中文描述 */
+    /** 模拟模式的报告模板：按天归组提交，过滤 Merge 噪音、剥离代码前缀后逐条中文分点 */
     private String templateReport(Map<String, String> toolResults, boolean weekly, LocalDate ref) {
         // 从工具结果里抽出 "MM-dd HH:mm · 标题" 形式的提交行，按日期归组
         Map<LocalDate, List<String>> byDay = new TreeMap<>();
@@ -984,46 +990,48 @@ public class AgentEngine {
         }
         StringBuilder sb = new StringBuilder();
         sb.append("【").append(reportDept).append("】个人效能").append(weekly ? "周报" : "日报").append("\n");
+        boolean any = false;
         for (Map.Entry<LocalDate, List<String>> e : byDay.entrySet()) {
-            String dayLine = summarizeDay(e.getValue());
-            if (dayLine != null) {
-                sb.append(e.getKey()).append("（").append(weekdayZh(e.getKey())).append("）").append(dayLine).append("\n");
+            List<String> items = dayItems(e.getValue());
+            if (items.isEmpty()) {
+                continue;
+            }
+            any = true;
+            // 日期独占一行，当日工作逐条分点，编号每天从 1 开始
+            sb.append(e.getKey()).append("（").append(weekdayZh(e.getKey())).append("）\n");
+            for (int i = 0; i < items.size(); i++) {
+                sb.append(i + 1).append(". ").append(items.get(i)).append("\n");
             }
         }
-        if (byDay.isEmpty()) {
+        if (!any) {
             sb.append(ref).append("（").append(weekdayZh(ref)).append("）暂无提交记录\n");
         }
-        sb.append("【").append(weekly ? "下周" : "明日").append("计划】待补充\n");
+        sb.append("【").append(weekly ? "下周" : "明日").append("计划】\n1. 待补充\n");
         sb.append("\n（模拟模式：由模板基于真实 GitLab 提交记录整理生成；配置 DEEPSEEK_API_KEY 后将由 LLM 归纳生成完整报告）");
         return sb.toString();
     }
 
+    /** 单日最多列出的工作条目数（超出部分不再展开，保持报告篇幅可控） */
+    private static final int MAX_DAY_ITEMS = 6;
+
     /**
-     * 单日提交整理为中文分条描述：过滤 Merge/分支同步噪音，剥离 conventional commit 前缀
-     * （feat(todo): → 待办模块），去重后最多 4 条、其余计入「等 N 项」。
+     * 单日提交整理为中文条目列表：过滤 Merge/分支同步噪音，剥离 conventional commit 前缀
+     * （feat(todo): → 待办模块），去重后按顺序最多 6 条。
      */
-    static String summarizeDay(List<String> titles) {
+    static List<String> dayItems(List<String> titles) {
         List<String> items = new ArrayList<>();
-        int total = 0;
         for (String raw : titles) {
             String cleaned = cleanCommitTitle(raw);
             if (cleaned == null) {
-                continue; // 纯 Merge/同步噪音，不计入
+                continue;
             }
-            total++;
             if (!items.contains(cleaned)) {
                 items.add(cleaned);
             }
         }
-        if (total == 0) {
-            return null;
-        }
-        List<String> shown = items.subList(0, Math.min(4, items.size()));
-        String line = String.join("；", shown);
-        if (total > shown.size()) {
-            line += "；等共 " + total + " 项提交";
-        }
-        return line;
+        return items.size() > MAX_DAY_ITEMS
+                ? new ArrayList<>(items.subList(0, MAX_DAY_ITEMS))
+                : items;
     }
 
     /** 提交标题清洗：Merge/分支同步类返回 null；conventional 前缀转为「模块：描述」 */

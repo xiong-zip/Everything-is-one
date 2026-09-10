@@ -6,6 +6,7 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** 报告模板的提交清洗与单日整理：Merge 噪音过滤、前缀剥离、分条限额 */
 class ReportTemplateTest {
@@ -28,20 +29,33 @@ class ReportTemplateTest {
     }
 
     @Test
-    void summarizeDayJoinsAndCounts() {
-        String day = AgentEngine.summarizeDay(List.of(
+    void dayItemsSplitsAndDedupes() {
+        List<String> items = AgentEngine.dayItems(List.of(
                 "Merge branch 'a' into 'master'",
                 "feat(todo): 新增菜单树查询接口",
                 "docs(todo): 配置更名",
                 "fix(todo): 修复空指针",
                 "feat(todo): 统计接口",
                 "feat(todo): 新增菜单树查询接口"));
-        assertEquals("待办模块：新增菜单树查询接口；待办模块：配置更名；待办模块：修复空指针；待办模块：统计接口；等共 5 项提交", day);
+        assertEquals(List.of(
+                "待办模块：新增菜单树查询接口",
+                "待办模块：配置更名",
+                "待办模块：修复空指针",
+                "待办模块：统计接口"), items);
     }
 
     @Test
-    void summarizeDayAllNoiseReturnsNull() {
-        assertNull(AgentEngine.summarizeDay(List.of(
-                "Merge branch 'a' into 'master'", "Merge branch 'b' into 'master'")));
+    void dayItemsCapsAtMax() {
+        List<String> raw = new java.util.ArrayList<>();
+        for (int i = 1; i <= 10; i++) {
+            raw.add("feat(core): 事项" + i);
+        }
+        assertEquals(6, AgentEngine.dayItems(raw).size());
+    }
+
+    @Test
+    void dayItemsAllNoiseReturnsEmpty() {
+        assertTrue(AgentEngine.dayItems(List.of(
+                "Merge branch 'a' into 'master'", "Merge branch 'b' into 'master'")).isEmpty());
     }
 }
