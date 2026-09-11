@@ -46,6 +46,8 @@ agentflow:
     log-limit: ${SIGNOZ_LOG_LIMIT:10}
     # 故障案例知识库目录（相对路径自动锚定项目根）
     kb-path: ${AGENTFLOW_INCIDENT_KB:./docs/incidents}
+    # 链路分析记录保留条数上限（工作台 → 链路分析 面板的数据，与任务历史共用同一个 SQLite）
+    analysis-max: ${AGENTFLOW_ANALYSIS_MAX:2000}
   schedule:
     morning-report:
       # 自动晨报机器人：定时生成昨日日报并推送（需配置 GITLAB_TOKEN；推送需配置 Webhook）

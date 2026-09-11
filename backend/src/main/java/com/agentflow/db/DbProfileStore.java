@@ -157,6 +157,39 @@ public class DbProfileStore {
         }
     }
 
+    /**
+     * 保存，支持改名（name 是主键，改名 = 删旧行 + 写新行）。
+     * 原连接若正好是默认连接，默认指针跟随到新名字，避免改名后默认失效。
+     */
+    public boolean saveRenamed(DbProfile p, String originalName) {
+        if (originalName == null || originalName.isBlank() || originalName.equals(p.name())) {
+            return save(p);
+        }
+        boolean wasActive = originalName.equals(getActive());
+        boolean removed = deleteRow(originalName);
+        boolean ok = save(p);
+        if (ok && wasActive) {
+            setActive(p.name());
+        }
+        if (!ok && removed) {
+            // 新行没写成功：尽力把原名恢复，避免"改个名连接就没了"
+            log.warn("连接改名失败，原名 {} 已被删除，新名 {} 未写入", originalName, p.name());
+        }
+        return ok;
+    }
+
+    /** 只删数据行，不动默认连接指针（供改名复用） */
+    private boolean deleteRow(String name) {
+        try (Connection c = open();
+             PreparedStatement ps = c.prepareStatement("DELETE FROM db_profiles WHERE name = ?")) {
+            ps.setString(1, name);
+            return ps.executeUpdate() > 0;
+        } catch (Exception ex) {
+            log.warn("删除数据库连接行失败：{}", ex.getMessage());
+            return false;
+        }
+    }
+
     /** 列表视图：不回传密码 */
     public List<Map<String, Object>> listSafe() {
         List<Map<String, Object>> out = new ArrayList<>();
@@ -169,6 +202,7 @@ public class DbProfileStore {
             m.put("databases", p.databases());
             m.put("username", p.username());
             m.put("schema", p.schemaName());
+            m.put("environment", p.environment());
             m.put("createdAt", p.createdAt());
             out.add(m);
         }

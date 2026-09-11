@@ -14,28 +14,6 @@
       </div>
       <div class="header-tools">
         <span class="llm-badge" :class="llm.cls">{{ llm.text }}</span>
-        <details ref="wbRef" class="wb-menu">
-          <summary class="clear-btn wb-summary" title="数据库 / GitLab / 效能 / 晨报 / 工具">
-            工作台<span class="wb-caret" aria-hidden="true">▾</span>
-          </summary>
-          <div class="wb-list" role="menu">
-            <button class="wb-item" type="button" role="menuitem" @click="wbGo('db')">
-              <span class="wb-ico" aria-hidden="true">🗄</span>数据库连接
-            </button>
-            <button class="wb-item" type="button" role="menuitem" @click="wbGo('gitlab')">
-              <span class="wb-ico" aria-hidden="true">🦊</span>GitLab 账户
-            </button>
-            <button class="wb-item" type="button" role="menuitem" @click="wbGo('stats')">
-              <span class="wb-ico" aria-hidden="true">▦</span>效能热力图
-            </button>
-            <button class="wb-item" type="button" role="menuitem" @click="wbGo('morning')">
-              <span class="wb-ico" aria-hidden="true">⏰</span>晨报机器人
-            </button>
-            <button class="wb-item" type="button" role="menuitem" @click="wbGo('tools')">
-              <span class="wb-ico" aria-hidden="true">⚙</span>工具管理
-            </button>
-          </div>
-        </details>
         <button v-if="hasRuns" class="clear-btn" type="button" @click="$emit('clear')">清空对话</button>
       </div>
     </div>
@@ -43,19 +21,10 @@
 </template>
 
 <script setup>
-import { ref } from 'vue'
-
+/* 工作台入口已移到左下角输入区（见 Composer），顶栏只保留任务历史与清空对话 */
 defineProps({
   llm: { type: Object, required: true },
   hasRuns: { type: Boolean, default: false },
 })
-const emit = defineEmits(['clear', 'history', 'tools', 'morning', 'stats', 'db', 'gitlab'])
-
-const wbRef = ref(null)
-
-/* 菜单项点击后关闭下拉并转发事件 */
-function wbGo(name) {
-  if (wbRef.value) wbRef.value.removeAttribute('open')
-  emit(name)
-}
+defineEmits(['clear', 'history'])
 </script>

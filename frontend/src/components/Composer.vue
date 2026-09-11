@@ -8,7 +8,7 @@
           ref="inputEl"
           v-model="command"
           rows="1"
-          placeholder="输入任何任务，如：查北京天气并写一首小诗 / 帮我写一封请假邮件…"
+          placeholder="输入任何任务…"
           @keydown="onKeydown"
           @input="autoResize"
         ></textarea>
@@ -23,17 +23,27 @@
         </button>
       </div>
       <div class="composer-meta">
-        <div class="example-chips" role="list" aria-label="示例任务">
-          <span class="chip-label">试试：</span>
+        <div class="composer-left">
           <button
-            v-for="s in examples"
-            :key="s.command"
+            class="wb-trigger"
             type="button"
-            role="listitem"
-            class="chip"
-            :class="{ active: s.command === command.trim() }"
-            @click="command = s.command"
-          >{{ s.short }}</button>
+            title="工作台：链路分析 / 数据库 / GitLab / 效能 / 晨报 / 工具"
+            @click="$emit('workbench')"
+          >
+            <span class="wb-trigger-ico" aria-hidden="true">☰</span>工作台
+          </button>
+          <div class="example-chips" role="list" aria-label="示例任务">
+            <span class="chip-label">试试：</span>
+            <button
+              v-for="s in examples"
+              :key="s.command"
+              type="button"
+              role="listitem"
+              class="chip"
+              :class="{ active: s.command === command.trim() }"
+              @click="command = s.command"
+            >{{ s.short }}</button>
+          </div>
         </div>
         <div class="composer-right">
           <select
@@ -75,7 +85,7 @@ const props = defineProps({
   dbActive: { type: String, default: '' },
 })
 
-const emit = defineEmits(['send', 'stop', 'toggle-confirm', 'db-active'])
+const emit = defineEmits(['send', 'stop', 'toggle-confirm', 'db-active', 'workbench'])
 
 function typeName(t) {
   return { dameng: '达梦', mysql: 'MySQL', postgresql: 'PostgreSQL', oracle: 'Oracle' }[t] || t
@@ -88,10 +98,11 @@ function send() {
   const text = command.value.trim()
   if (!text || props.busy) return
   emit('send', text)
-  // 发送后清空输入框并复位高度
+  // 发送后清空输入框并复位高度与滚动条
   command.value = ''
   if (inputEl.value) {
     inputEl.value.style.height = 'auto'
+    inputEl.value.style.overflowY = 'hidden'
   }
 }
 
@@ -102,10 +113,13 @@ function onKeydown(e) {
   }
 }
 
+/* 高度跟随内容增长，上限取 CSS 的 max-height（3 行）；只有超出上限才出现滚动条 */
 function autoResize(e) {
   const el = e.target
   el.style.height = 'auto'
-  el.style.height = Math.min(el.scrollHeight, 140) + 'px'
+  const max = parseFloat(getComputedStyle(el).maxHeight) || 88
+  el.style.height = Math.min(el.scrollHeight, max) + 'px'
+  el.style.overflowY = el.scrollHeight > max ? 'auto' : 'hidden'
 }
 
 /* 外部预填（欢迎页/示例点击） */

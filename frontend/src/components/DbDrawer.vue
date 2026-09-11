@@ -1,6 +1,6 @@
 <template>
-  <div class="drawer-mask" @click.self="$emit('close')">
-    <aside class="history-drawer db-drawer" role="dialog" aria-label="数据库连接">
+  <div :class="embedded ? 'wb-pane' : 'drawer-mask'" @click.self="!embedded && $emit('close')">
+    <aside :class="['history-drawer', 'db-drawer', { 'wb-embed': embedded }]" role="dialog" aria-label="数据库连接">
       <div class="hd-head">
         <h3>数据库连接</h3>
         <div class="hd-actions">
@@ -13,8 +13,8 @@
         <div class="db-form-title">{{ editing ? '编辑连接' : '新增连接' }}</div>
         <div class="db-grid">
           <label class="db-field">
-            <span>连接名</span>
-            <input v-model="form.name" class="db-input" placeholder="如 DM_TEST（字母/数字/下划线）" :disabled="!!editing" />
+            <span>连接名{{ editing ? '（改名会同步更新默认连接）' : '' }}</span>
+            <input v-model="form.name" class="db-input" placeholder="如 DM_TEST（字母/数字/下划线）" />
           </label>
           <label class="db-field">
             <span>类型</span>
@@ -49,6 +49,21 @@
             <span>Schema（可选）</span>
             <input v-model="form.schema" class="db-input" placeholder="Oracle/PG/达梦 适用" />
           </label>
+          <label class="db-field">
+            <span>环境（可选，可自己填）</span>
+            <input
+              v-model="form.environment"
+              class="db-input"
+              list="db-env-options"
+              placeholder="开发 / 测试 / 生产…"
+            />
+            <datalist id="db-env-options">
+              <option value="开发"></option>
+              <option value="测试"></option>
+              <option value="预发"></option>
+              <option value="生产"></option>
+            </datalist>
+          </label>
         </div>
         <div class="db-form-actions">
           <button class="btn btn-primary" type="button" :disabled="saving" @click="save">{{ saving ? '保存中…' : '保存' }}</button>
@@ -68,6 +83,7 @@
             <div class="db-item-head">
               <code>{{ p.name }}</code>
               <span class="db-tag" :class="p.type">{{ typeName(p.type) }}</span>
+              <span v-if="p.environment" class="db-env-tag">{{ p.environment }}</span>
               <span v-if="p.name === activeName" class="db-active-badge">★ 默认</span>
               <span class="db-host">{{ p.host }}:{{ p.port }} · {{ p.username }}</span>
             </div>
@@ -88,7 +104,11 @@
 </template>
 
 <script setup>
+/* embedded=true：作为工作台窗口内的面板渲染，去掉遮罩与固定侧栏宽度 */
+defineProps({ embedded: { type: Boolean, default: false } })
+
 import { onMounted, ref } from 'vue'
+import { showToast } from '../composables/useToast'
 
 const profiles = ref([])
 const loading = ref(false)
@@ -97,7 +117,7 @@ const testing = ref('')
 const editing = ref(null)
 const message = ref(null)
 const activeName = ref('')
-const emptyForm = { name: '', type: 'dameng', host: '', port: 5253, databases: '', username: '', password: '', schema: '' }
+const emptyForm = { name: '', type: 'dameng', host: '', port: 5253, databases: '', username: '', password: '', schema: '', environment: '' }
 const form = ref({ ...emptyForm })
 
 const emit = defineEmits(['close', 'active-changed'])
@@ -138,11 +158,16 @@ async function save() {
     const res = await fetch('/api/dbprofiles', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...form.value, port: Number(form.value.port) }),
+      body: JSON.stringify({
+        ...form.value,
+        port: Number(form.value.port),
+        // 编辑态带上原名：服务端据此改名（含默认连接指针跟随），名字没变则等价于普通覆盖
+        originalName: editing.value || '',
+      }),
     })
     const data = await res.json()
     if (!res.ok) throw new Error(data.error || '保存失败')
-    message.value = { text: '连接已保存，可直接在对话中使用', cls: 'ok' }
+    message.value = { text: editing.value ? '连接已更新' : '连接已保存，可直接在对话中使用', cls: 'ok' }
     resetForm()
     await load()
   } catch (err) {
@@ -157,6 +182,7 @@ function edit(p) {
   form.value = {
     name: p.name, type: p.type, host: p.host, port: p.port,
     databases: p.databases, username: p.username, password: '', schema: p.schema || '',
+    environment: p.environment || '',
   }
 }
 
@@ -167,13 +193,16 @@ function resetForm() {
 
 async function test(name) {
   testing.value = name
-  message.value = null
   try {
     const res = await fetch(`/api/dbprofiles/${encodeURIComponent(name)}/test`, { method: 'POST' })
     const data = await res.json()
-    message.value = { text: `${name}：${data.message}`, cls: data.ok ? 'ok' : 'err' }
+    if (data.ok) {
+      showToast(`${name}：${data.message}`, 'ok')
+    } else {
+      showToast(`${name} 连接失败：${causeOf(data.message)}`, 'err')
+    }
   } catch {
-    message.value = { text: '测试请求失败', cls: 'err' }
+    showToast(`${name} 测试请求失败，请检查后端是否可用`, 'err')
   } finally {
     testing.value = ''
   }
@@ -189,6 +218,21 @@ async function remove(name) {
 
 function typeName(t) {
   return { dameng: '达梦', mysql: 'MySQL', postgresql: 'PostgreSQL', oracle: 'Oracle' }[t] || t
+}
+
+/**
+ * 后端回传的是扫描器原始输出，失败时通常是一整段 Python traceback，
+ * 真正的根因在末尾（如 DMException: 网络通信异常）。提示里只带这一行，细节看后端日志。
+ */
+function causeOf(text) {
+  const lines = String(text || '').split('\n').map((l) => l.trim()).filter(Boolean)
+  for (let i = lines.length - 1; i >= 0; i--) {
+    // 跳过 traceback 的文件行，取最后一条真正的异常行
+    if (/(Exception|Error)/.test(lines[i]) && !lines[i].startsWith('File "')) {
+      return lines[i].replace(/^连接失败：/, '').slice(0, 200)
+    }
+  }
+  return (lines[lines.length - 1] || '未知原因').replace(/^连接失败：/, '').slice(0, 200)
 }
 
 onMounted(load)

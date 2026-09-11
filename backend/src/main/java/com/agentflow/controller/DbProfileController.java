@@ -50,18 +50,24 @@ public class DbProfileController {
         return Map.of("ok", name.isBlank() ? "cleared" : name);
     }
 
-    /** 保存（按 name 覆盖）；password 留空表示沿用原密码 */
+    /** 保存（按 name 覆盖）；password 留空表示沿用原密码；originalName 非空表示改名 */
     @PostMapping
     public Map<String, String> save(@RequestBody DbProfileRequest req) {
         validate(req);
-        DbProfile existing = store.find(req.name);
-        String password = req.password == null || req.password.isBlank()
+        String original = isBlank(req.originalName) ? req.name : req.originalName.trim();
+        // 改名的密码/创建时间要从原连接取，不能按新名字找
+        DbProfile existing = store.find(original);
+        if (!original.equals(req.name) && store.find(req.name) != null) {
+            throw new IllegalArgumentException("连接名已存在：" + req.name);
+        }
+        String password = isBlank(req.password)
                 ? (existing == null ? "" : existing.password())
                 : req.password;
         DbProfile p = new DbProfile(req.name, req.type, req.host, req.port,
                 req.databases, req.username, password, emptyToNull(req.schema),
+                emptyToNull(req.environment),
                 existing == null ? null : existing.createdAt());
-        if (!store.save(p)) {
+        if (!store.saveRenamed(p, original)) {
             throw new IllegalArgumentException("保存失败，请检查后重试");
         }
         return Map.of("ok", "saved");
@@ -117,6 +123,7 @@ public class DbProfileController {
     }
 
     public record DbProfileRequest(String name, String type, String host, int port,
-                                   String databases, String username, String password, String schema) {
+                                   String databases, String username, String password, String schema,
+                                   String environment, String originalName) {
     }
 }

@@ -1,6 +1,6 @@
 <template>
   <div class="app">
-    <ChatHeader :llm="llm" :hasRuns="runs.length > 0" @clear="clearAll()" @history="openHistory()" @tools="toolsOpen = true" @morning="morningOpen = true" @stats="statsOpen = true" @db="dbOpen = true" @gitlab="gitlabOpen = true" />
+    <ChatHeader :llm="llm" :hasRuns="runs.length > 0" @clear="clearAll()" @history="openHistory()" />
 
     <!-- 任务历史抽屉：左侧滑出，点击条目即可回放当时的完整执行过程 -->
     <div v-if="historyOpen" class="drawer-mask" @click.self="historyOpen = false">
@@ -54,20 +54,17 @@
       </aside>
     </div>
 
-    <!-- 工具管理抽屉：查看/导入/删除工具 -->
-    <ToolsDrawer v-if="toolsOpen" @close="toolsOpen = false" />
+    <!-- 工作台：窗口弹窗，左侧菜单 + 右侧内容（入口在左下角输入区） -->
+    <WorkbenchModal
+      v-if="workbenchOpen"
+      :tab="workbenchTab"
+      @close="workbenchOpen = false"
+      @run="analyzeFromRecord"
+      @db-active-changed="dbActive = $event"
+    />
 
-    <!-- 晨报机器人抽屉：定时状态 + 立即试跑 -->
-    <ScheduleDrawer v-if="morningOpen" @close="morningOpen = false" />
-
-    <!-- 效能热力图抽屉 -->
-    <StatsDrawer v-if="statsOpen" @close="statsOpen = false" />
-
-    <!-- 数据库连接抽屉 -->
-    <DbDrawer v-if="dbOpen" @close="dbOpen = false" @active-changed="dbActive = $event" />
-
-    <!-- GitLab 账户抽屉：维护 Access Token -->
-    <GitlabDrawer v-if="gitlabOpen" @close="gitlabOpen = false" />
+    <!-- 全局轻提示：任何面板里的操作结果都从这里统一弹出 -->
+    <ToastHost />
 
     <main class="chat-main" ref="scrollEl">
       <div class="chat-scroll">
@@ -80,7 +77,7 @@
             </svg>
           </div>
           <h1>你好，我是 <em>AgentFlow</em></h1>
-          <p>告诉我任何任务——查天气、看股价、规划行程，或者写文案、写邮件。我会自动拆解、调用工具、逐步完成并汇总结果。</p>
+          <p>告诉我任何任务——根据提交生成日报周报、分析链路定位故障根因、查数据库表结构，或者写文案、写邮件。我会自动拆解、调用工具、逐步完成并汇总结果。</p>
           <div class="welcome-ideas">
             <button v-for="s in examples" :key="s.command" type="button" class="chip" @click="prefill = { command: s.command, nonce: Date.now() }">{{ s.short }}</button>
           </div>
@@ -95,7 +92,7 @@
       </div>
     </main>
 
-    <Composer :busy="busy" :examples="examples" :prefill="prefill" :confirmMode="confirmMode" :dbProfiles="dbProfiles" :dbActive="dbActive" @send="runAgent" @stop="stopRun" @toggle-confirm="confirmMode = !confirmMode" @db-active="onDbActive" />
+    <Composer :busy="busy" :examples="examples" :prefill="prefill" :confirmMode="confirmMode" :dbProfiles="dbProfiles" :dbActive="dbActive" @send="runAgent" @stop="stopRun" @toggle-confirm="confirmMode = !confirmMode" @db-active="onDbActive" @workbench="openWorkbench" />
   </div>
 </template>
 
@@ -104,11 +101,8 @@ import { nextTick, onMounted, ref, watch } from 'vue'
 import ChatHeader from './components/ChatHeader.vue'
 import AgentRun from './components/AgentRun.vue'
 import Composer from './components/Composer.vue'
-import ToolsDrawer from './components/ToolsDrawer.vue'
-import ScheduleDrawer from './components/ScheduleDrawer.vue'
-import StatsDrawer from './components/StatsDrawer.vue'
-import DbDrawer from './components/DbDrawer.vue'
-import GitlabDrawer from './components/GitlabDrawer.vue'
+import WorkbenchModal from './components/WorkbenchModal.vue'
+import ToastHost from './components/ToastHost.vue'
 import { useAgent } from './composables/useAgent'
 
 const API_BASE = '/api/agent'
@@ -120,13 +114,22 @@ const prefill = ref({ command: '', nonce: 0 })
 const historyOpen = ref(false)
 const historyKeyword = ref('')
 let historyLimit = 50
-const toolsOpen = ref(false)
-const morningOpen = ref(false)
-const statsOpen = ref(false)
-const dbOpen = ref(false)
-const gitlabOpen = ref(false)
+const workbenchOpen = ref(false)
+const workbenchTab = ref('trace')
 const dbProfiles = ref([])
 const dbActive = ref('')
+
+/* 左下角「工作台」入口：打开窗口弹窗，默认展示链路分析 */
+function openWorkbench() {
+  workbenchTab.value = 'trace'
+  workbenchOpen.value = true
+}
+
+/* 链路分析记录里点「再次分析」：关窗并把指令预填进输入框（不直接执行） */
+function analyzeFromRecord(traceId) {
+  workbenchOpen.value = false
+  prefill.value = { command: `分析链路 ${traceId}`, nonce: Date.now() }
+}
 
 async function loadDbMeta() {
   try {
@@ -151,8 +154,8 @@ async function onDbActive(name) {
   } catch { /* 静默 */ }
 }
 
-/* 连接抽屉里可能改了连接/默认，关闭后刷新输入区选择器状态 */
-watch(dbOpen, (open) => {
+/* 工作台窗口关闭后刷新输入区选择器状态（连接可能在里面改过） */
+watch(workbenchOpen, (open) => {
   if (!open) loadDbMeta()
 })
 

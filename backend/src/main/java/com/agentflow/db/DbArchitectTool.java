@@ -43,13 +43,16 @@ public class DbArchitectTool implements Tool {
             return "数据库透视（当前未配置任何连接：请提示用户在「工作台 → 数据库连接」中添加后重试）";
         }
         String names = profiles.stream()
-                .map(p -> p.name() + "（" + p.type() + "，库 " + p.databases() + "）")
+                .map(p -> p.name() + "（" + p.type()
+                        + (p.environment() == null || p.environment().isBlank() ? "" : "·" + p.environment())
+                        + "，库 " + p.databases() + "）")
                 .collect(Collectors.joining("；"));
         String active = store.getActive();
         return "数据库透视：查表结构/DDL/建表语法、按中文名找表、导出数据为 INSERT/表格、生成 ER 图、跨库结构比对、业务域分析"
                 + "（只读查询）。已配置连接：" + names + "。用户指令未指明数据库时不要传 profile 参数"
                 + (active == null ? "" : "（当前默认连接：" + active + "）")
-                + "；明确提到某个连接/库时 profile 用对应连接名";
+                + "；明确提到某个连接/库时 profile 用对应连接名"
+                + "；用户提到环境（如生产/测试）时，按连接名后的环境标签选对应连接";
     }
 
     @Override

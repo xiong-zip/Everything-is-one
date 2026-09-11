@@ -1,6 +1,6 @@
 <template>
-  <div class="drawer-mask" @click.self="$emit('close')">
-    <aside class="history-drawer stats-drawer" role="dialog" aria-label="效能统计">
+  <div :class="embedded ? 'wb-pane' : 'drawer-mask'" @click.self="!embedded && $emit('close')">
+    <aside :class="['history-drawer', 'stats-drawer', { 'wb-embed': embedded }]" role="dialog" aria-label="效能统计">
       <div class="hd-head">
         <h3>效能热力图</h3>
         <div class="hd-actions">
@@ -60,6 +60,9 @@
 </template>
 
 <script setup>
+/* embedded=true：作为工作台窗口内的面板渲染，去掉遮罩与固定侧栏宽度 */
+defineProps({ embedded: { type: Boolean, default: false } })
+
 import { computed, onMounted, ref } from 'vue'
 
 defineEmits(['close'])

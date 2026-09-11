@@ -1,6 +1,6 @@
 <template>
-  <div class="drawer-mask" @click.self="$emit('close')">
-    <aside class="history-drawer db-drawer" role="dialog" aria-label="GitLab 账户">
+  <div :class="embedded ? 'wb-pane' : 'drawer-mask'" @click.self="!embedded && $emit('close')">
+    <aside :class="['history-drawer', 'db-drawer', { 'wb-embed': embedded }]" role="dialog" aria-label="GitLab 账户">
       <div class="hd-head">
         <h3>GitLab 账户</h3>
         <div class="hd-actions">
@@ -62,6 +62,9 @@
 </template>
 
 <script setup>
+/* embedded=true：作为工作台窗口内的面板渲染，去掉遮罩与固定侧栏宽度 */
+defineProps({ embedded: { type: Boolean, default: false } })
+
 import { onMounted, ref } from 'vue'
 
 const accounts = ref([])

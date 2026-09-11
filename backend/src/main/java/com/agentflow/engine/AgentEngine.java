@@ -4,11 +4,9 @@ import com.agentflow.llm.LlmClient;
 import com.agentflow.model.PlanStep;
 import com.agentflow.model.ToolCall;
 import com.agentflow.tool.GitLabTool;
-import com.agentflow.tool.StockTool;
 import com.agentflow.tool.Tool;
 import com.agentflow.tool.ToolRegistry;
 import com.agentflow.tool.ToolResult;
-import com.agentflow.tool.WeatherTool;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
@@ -472,21 +470,10 @@ public class AgentEngine {
         return new PlanOutcome(heuristicIntent(command), heuristicPlan(command));
     }
 
-    /** 启发式意图抽取：城市/股票实体表 + 关键词类别 */
+    /** 启发式意图抽取：关键词类别（仅在 LLM 不可用或规划失败时兜底） */
     private Intent heuristicIntent(String command) {
         List<String> entities = new ArrayList<>();
-        for (String c : WeatherTool.findCities(command)) {
-            entities.add("城市:" + c);
-        }
-        String stockName = StockTool.findStock(command);
-        if (stockName != null) {
-            entities.add("股票:" + stockName);
-        }
         List<String> categories = new ArrayList<>();
-        if (command.contains("天气")) categories.add("天气查询");
-        if (stockName != null || command.contains("股价") || command.contains("股票")) categories.add("行情查询");
-        if (command.contains("高铁") || command.contains("交通") || command.contains("怎么去") || command.contains("机票")) categories.add("交通方案");
-        if (command.contains("美食") || command.contains("吃") || command.contains("景点") || command.contains("推荐")) categories.add("本地推荐");
         if (detectReportKind(command) != null) categories.add("GitLab 工作报告");
         entities.addAll(categories);
 
@@ -694,37 +681,7 @@ public class AgentEngine {
             return steps;
         }
 
-        // 1. 实体驱动的工具步（真实数据 API）
-        String city = WeatherTool.findCity(command);
-        boolean wantsWeather = command.contains("天气");
-        if (city != null && (wantsWeather || command.contains("气温") || command.contains("下雨"))) {
-            steps.add(PlanStep.tool("查询" + city + "今日天气", new ToolCall("weather.query", Map.of("city", city))));
-        }
-        String stock = StockTool.findStock(command);
-        if (stock != null) {
-            steps.add(PlanStep.tool("查询" + stock + "实时行情",
-                    new ToolCall("stock.query", Map.of("stock", stock))));
-        }
-        boolean wantsTransit = command.contains("高铁") || command.contains("交通") || command.contains("怎么去")
-                || command.contains("机票") || command.contains("火车");
-        List<String> cities = WeatherTool.findCities(command);
-        if (wantsTransit && !cities.isEmpty()) {
-            Map<String, Object> args = new LinkedHashMap<>();
-            args.put("from", cities.get(0));
-            if (cities.size() > 1) args.put("to", cities.get(1));
-            steps.add(PlanStep.tool("规划" + String.join("→", cities) + "交通方案",
-                    new ToolCall("transit.query", args)));
-        }
-        boolean wantsPoi = command.contains("美食") || command.contains("小吃") || command.contains("景点")
-                || (command.contains("推荐") && city != null);
-        if (wantsPoi) {
-            Map<String, Object> args = new LinkedHashMap<>();
-            if (city != null) args.put("city", city);
-            args.put("keyword", command.contains("景点") ? "景点" : "美食");
-            steps.add(PlanStep.tool("收集" + (city == null ? "目的地" : city) + "美食/景点推荐",
-                    new ToolCall("poi.recommend", args)));
-        }
-
+        // 1. 关键词驱动的工具步
         boolean wantsGitlab = command.toLowerCase().contains("gitlab")
                 || command.contains("合并请求") || command.contains("流水线") || command.contains("构建状态");
         if (wantsGitlab || command.toLowerCase().contains("issue") || command.contains("缺陷单") || command.contains("任务单")) {

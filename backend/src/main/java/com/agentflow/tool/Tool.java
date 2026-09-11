@@ -8,7 +8,7 @@ import java.util.Map;
  */
 public interface Tool {
 
-    /** 注册名，如 weather.query */
+    /** 注册名，如 gitlab.query */
     String name();
 
     /** 一句话能力描述，用于注入规划 prompt */

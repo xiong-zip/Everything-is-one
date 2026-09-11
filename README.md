@@ -17,6 +17,8 @@
 | **GitLab 只读查询 + 受控写操作** | 提交/项目/Issue/MR/流水线查询；创建 Issue、评论等低风险写操作需人工确认 |
 | **数据库透视（内置 db-architect）** | 自然语言查库表结构 / DDL / 按中文名找表 / 导出数据为 INSERT / ER 图 / 跨库结构比对，支持达梦、MySQL、Oracle、PostgreSQL；**连接配置在界面里管理**（工作台 → 数据库连接），无需改任何配置文件 |
 | **SigNoz 链路分析 + 故障案例知识库** | 给一个 trace ID 自动查 span 树与 ERROR/WARN 日志，输出根因、失败传播链、耗时与状态矛盾（如 HTTP 200 但业务失败）；默认 24h 查不到自动扩到 7d；分析前自动比对 `docs/incidents/` 知识库，命中已知故障直接复用历史处置；可将结论归档为案例（同一故障模式累加次数，不重复建档，归档需人工放行） |
+| **工作台（窗口弹窗）** | 入口在左下角输入区，打开为居中窗口：**左侧菜单 + 右侧内容**，含链路分析记录、数据库连接、GitLab 账户、效能热力图、晨报机器人、工具管理；支持 Esc / 点遮罩 / 关闭按钮退出 |
+| **链路分析记录** | 每次链路分析自动落库（按 trace ID 去重，重复分析累加次数）：失败点、指纹、涉及服务、耗时、环境、命中的案例、分析摘要全文；可按 trace ID / 失败点 / 指纹 / 服务 / 案例号检索，并统计失败数与高频故障指纹 |
 | **GitLab 效能日报/周报** | 拉取时间窗内逐条提交，LLM 归纳成固定格式报告，支持「今天/昨天/本周」 |
 | **自动晨报机器人** | 定时（默认工作日 9 点）生成昨日日报并推送到企微/钉钉 Webhook，全程无人值守 |
 | **效能热力图** | 半年 GitLab 提交分布一图可见：总提交、活跃天、最长连续（数据缓存 10 分钟） |
@@ -28,9 +30,9 @@
 | 模式 | 触发条件 | 行为 |
 |---|---|---|
 | **LLM 模式** | 配置 `DEEPSEEK_API_KEY` | LLM 动态规划任意任务、真实推理与内容生成、AI 汇总 |
-| **模拟模式** | 未配置 Key | 启发式拆解任意指令；天气/股价仍调**真实数据 API**；LLM 类内容以模板生成并明确标注 |
+| **模拟模式** | 未配置 Key | 启发式拆解任意指令；GitLab / 数据库 / 链路分析仍取**真实数据**；LLM 类内容以模板生成并明确标注 |
 
-不限于任何预置场景——"查北京天气写首诗"、"贵州茅台股价点评"、"写封请假邮件"都可以直接执行。
+不限于任何预置场景——"根据我的提交生成周报"、"分析链路 c4ea1634…"、"写封请假邮件"都可以直接执行。
 
 ## 项目结构
 
@@ -56,7 +58,7 @@ Everything-is-one/
 │           ├── ChatHeader.vue        # 顶栏（品牌 / LLM 状态 / 清空对话）
 │           ├── AgentRun.vue          # 单轮 Agent 执行面板（意图/阶段/时间线/汇总）
 │           ├── StepCard.vue          # 执行步骤卡片
-│           ├── ResultCard.vue        # 结果卡片（天气/股票/交通/列表/文案/通用提示）
+│           ├── ResultCard.vue        # 结果卡片（列表/文案/通用提示）
 │           └── Composer.vue          # 底部输入区（自动增高 + 示例建议）
 └── backend/                    # 后端（Spring Boot 3）
     ├── pom.xml                 # Maven 依赖 + frontend-maven-plugin（自动下载 Node 并构建前端）
@@ -130,6 +132,7 @@ start.bat
 | `SIGNOZ_MCP_URL` | 否 | SigNoz MCP 地址，用于链路分析工具（默认 `http://192.168.2.111:18000/mcp`，需内网可达） |
 | `SIGNOZ_TIME_RANGE` / `SIGNOZ_FALLBACK_RANGE` / `SIGNOZ_LOG_LIMIT` | 否 | 链路查询时间窗、查不到时的降级窗口、补查日志条数（默认 `24h` / `7d` / `10`；两天前的链路只有 `7d` 才查得到） |
 | `AGENTFLOW_INCIDENT_KB` | 否 | 故障案例知识库目录（默认 `./docs/incidents`，相对路径自动锚定项目根） |
+| `AGENTFLOW_ANALYSIS_MAX` | 否 | 链路分析记录保留条数上限（默认 `2000`，工作台 → 链路分析 面板的数据） |
 
 ## 前端开发模式（可选）
 
@@ -166,6 +169,9 @@ java -jar target/agentflow-backend-0.0.1-SNAPSHOT.jar   # 运行 jar
 | POST | `/api/agent/run/{taskId}/confirm` | confirm 模式回传确认/编辑后的计划 |
 | GET/DELETE | `/api/agent/history` `/{id}` | 任务历史列表（支持 `keyword` 关键词搜索）/ 回放 / 删除 / 清空 |
 | GET | `/api/stats/heatmap?days=182` | GitLab 提交热力图数据（缓存 10 分钟） |
+| GET | `/api/signoz/analyses?keyword=&limit=&offset=` | 链路分析记录列表（keyword 匹配 trace ID / 失败点 / 指纹 / 服务 / 案例号） |
+| GET/DELETE | `/api/signoz/analyses` `/{id}` | 分析记录详情 / 删除单条 / 清空全部 |
+| GET | `/api/signoz/stats` | 链路分析汇总（总数、失败数、未查到、命中案例、Top 服务与指纹） |
 | GET/POST/DELETE | `/api/dbprofiles` `/{name}` `/{name}/test` | 数据库连接管理（保存/删除/测试连接） |
 | GET | `/api/tools` | 已注册工具列表（含动态工具、写操作标记） |
 | POST | `/api/tools/openapi` | 从 OpenAPI/Swagger 文档导入工具（body: `{"url": "..."}`） |

@@ -6,13 +6,14 @@ package com.agentflow.db;
  */
 public record DbProfile(
         String name,
-        String type,        // mysql | oracle | postgresql | dameng
+        String type,          // mysql | oracle | postgresql | dameng
         String host,
         int port,
-        String databases,   // 库名，可逗号分隔多个
+        String databases,     // 库名，可逗号分隔多个
         String username,
         String password,
-        String schemaName,  // Oracle/PG/达梦 的 schema，可空
+        String schemaName,    // Oracle/PG/达梦 的 schema，可空
+        String environment,   // 环境标签（开发/测试/生产…自由文本），区分同结构的多个环境，可空
         String createdAt) {
 
     public String firstDatabase() {

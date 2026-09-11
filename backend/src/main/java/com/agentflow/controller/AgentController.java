@@ -27,8 +27,8 @@ public class AgentController {
     private static final List<Map<String, String>> EXAMPLES = List.of(
             Map.of("command", "根据我的 GitLab 提交记录生成今天的工作日报", "short", "GitLab 日报"),
             Map.of("command", "根据我的 GitLab 提交记录生成本周的工作周报", "short", "GitLab 周报"),
-            Map.of("command", "帮我查厦门今天天气，然后生成一段朋友圈文案", "short", "天气 + 文案"),
-            Map.of("command", "查一下贵州茅台今天的股价，写一段给领导的汇报", "short", "股价 + 汇报"),
+            Map.of("command", "分析链路 c4ea16342cf1a0526d22fa20d57c9e2a", "short", "链路分析"),
+            Map.of("command", "查一下当前数据库里有哪些表", "short", "数据库表清单"),
             Map.of("command", "帮我写一封调休假的请假邮件", "short", "写邮件"));
 
     private final AgentEngine engine;

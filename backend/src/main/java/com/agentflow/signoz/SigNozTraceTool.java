@@ -27,11 +27,14 @@ public class SigNozTraceTool implements Tool {
     private final SigNozMcpClient client;
     private final TraceFetcher fetcher;
     private final IncidentKb kb;
+    private final TraceAnalysisStore store;
 
-    public SigNozTraceTool(SigNozMcpClient client, TraceFetcher fetcher, IncidentKb kb) {
+    public SigNozTraceTool(SigNozMcpClient client, TraceFetcher fetcher, IncidentKb kb,
+                          TraceAnalysisStore store) {
         this.client = client;
         this.fetcher = fetcher;
         this.kb = kb;
+        this.store = store;
     }
 
     @Override
@@ -115,7 +118,25 @@ public class SigNozTraceTool implements Tool {
                 ? "SigNoz 链路分析完成 · 失败链路 · " + (origin == null ? "" : origin.label())
                 + (match.actionable() ? " · 命中案例 " + match.entry().id() : " · 未命中知识库")
                 : "SigNoz 链路分析完成 · 成功链路 · 总耗时 " + (root == null ? "?" : TraceDigest.fmt(root.durationMs())) + "ms";
+
+        // 落一条分析记录供工作台「链路分析」面板查看；失败只记日志，不影响本次分析结果
+        store.record(new TraceAnalysisStore.AnalysisRecord(0, traceId, "", fetched.rangeUsed(),
+                fetched.spans().size(), IncidentKb.servicesOf(fetched.spans()), true, fetched.failed(),
+                origin == null ? "" : origin.label(), fp.errorClass(), fp.signature(),
+                root == null ? 0 : root.durationMs(), firstEnv(fetched.spans()),
+                match.actionable() && match.entry() != null ? match.entry().id() : "",
+                match.strength().name(), 1, digest));
+
         return new ToolResult("list", result, lines, summary);
+    }
+
+    private static String firstEnv(List<TraceSpan> spans) {
+        for (TraceSpan s : spans) {
+            if (s.env() != null && !s.env().isBlank()) {
+                return s.env();
+            }
+        }
+        return "";
     }
 
     /** 未找到时的降级提示：把服务端"该 trace 存在于某时间段"的提示原样带出，别让用户白猜 */
@@ -129,6 +150,9 @@ public class SigNozTraceTool implements Tool {
         sb.append("\n可能原因：trace ID 输入有误；超出数据保留期；采样未保留；")
                 .append("trace 未写入 SigNoz；查询环境与 trace 所在环境不一致。")
                 .append("\n建议补充：大概发生时间、来源服务或接口、环境。");
+        // 未找到也留一条记录：便于回看"我查过哪些 trace 但没查到"
+        store.record(new TraceAnalysisStore.AnalysisRecord(0, traceId, "", fetched.rangeUsed(),
+                0, List.of(), false, false, "", "", "", 0, "", "", "NONE", 1, sb.toString()));
         return ToolResult.note(sb.toString());
     }
 
