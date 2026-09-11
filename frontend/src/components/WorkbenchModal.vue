@@ -26,6 +26,7 @@
         <StatsDrawer v-else-if="active === 'stats'" embedded />
         <ScheduleDrawer v-else-if="active === 'morning'" embedded />
         <ToolsDrawer v-else-if="active === 'tools'" embedded />
+        <LlmPane v-else-if="active === 'llm'" embedded />
       </div>
     </section>
   </div>
@@ -39,6 +40,7 @@ import GitlabDrawer from './GitlabDrawer.vue'
 import StatsDrawer from './StatsDrawer.vue'
 import ScheduleDrawer from './ScheduleDrawer.vue'
 import ToolsDrawer from './ToolsDrawer.vue'
+import LlmPane from './LlmPane.vue'
 
 const props = defineProps({
   // 打开时默认展示的面板
@@ -53,6 +55,7 @@ const tabs = [
   { key: 'stats', icon: '▦', label: '效能热力图' },
   { key: 'morning', icon: '⏰', label: '晨报机器人' },
   { key: 'tools', icon: '⚙', label: '工具管理' },
+  { key: 'llm', icon: '🤖', label: '模型接入' },
 ]
 
 const active = ref(tabs.some((t) => t.key === props.tab) ? props.tab : 'trace')

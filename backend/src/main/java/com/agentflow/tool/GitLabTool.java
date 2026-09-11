@@ -53,6 +53,12 @@ public class GitLabTool implements Tool {
         return t == null || t.isBlank() ? envToken : t.trim();
     }
 
+    /** 当前生效 token 的指纹（仅在内存中用于缓存 key，切换账户后变化即缓存失效） */
+    public String tokenFingerprint() {
+        String t = currentToken();
+        return t.isBlank() ? "none" : String.valueOf(t.hashCode());
+    }
+
     @Override
     public String name() {
         return "gitlab.query";
@@ -114,6 +120,11 @@ public class GitLabTool implements Tool {
      * 近 days 天的每日提交数（推送事件 commit_count 聚合），供效能热力图。
      * 分页拉取时间窗内推送事件，返回 [{date: "yyyy-MM-dd", count: n}]（仅非零日）。
      */
+    /**
+     * 按天统计贡献数，口径与 GitLab 贡献日历一致：每个事件（push/MR/评论等）计 1 个贡献。
+     * 注意不能累加 push 事件的 commit_count：分支同步/整支推送会一次带上大量他人提交，
+     * 与 GitLab 页面显示的贡献数差异巨大（实测 4/8：事件数 57 = GitLab 显示，commit_count 累加为 193）。
+     */
     public List<Map<String, Object>> dailyCommitCounts(int days) throws Exception {
         if (currentToken().isEmpty()) {
             return List.of();
@@ -123,9 +134,10 @@ public class GitLabTool implements Tool {
         java.time.LocalDate afterDate = java.time.LocalDate.now().minusDays(days - 1);
         String after = afterDate.toString();
         Map<String, Integer> counts = new TreeMap<>();
-        for (int page = 1; page <= 10; page++) {
+        // 一年事件量可达数千条（活跃日单日 50+），100 页 × 100 条上限防止截断
+        for (int page = 1; page <= 100; page++) {
             // after 严格晚于该日（排除当天），往前多退一天，边界由下方日期比较卡准
-            JsonNode events = getJson("/api/v4/users/" + uid + "/events?action=pushed&after=" + afterDate.minusDays(1)
+            JsonNode events = getJson("/api/v4/users/" + uid + "/events?after=" + afterDate.minusDays(1)
                     + "&per_page=100&sort=desc&page=" + page);
             if (!events.isArray() || events.isEmpty()) {
                 break;
@@ -141,8 +153,7 @@ public class GitLabTool implements Tool {
                     continue;
                 }
                 inWindow = true;
-                int n = e.path("push_data").path("commit_count").asInt(1);
-                counts.merge(date, Math.max(1, n), Integer::sum);
+                counts.merge(date, 1, Integer::sum);
             }
             if (events.size() < 100 || !inWindow) {
                 break;

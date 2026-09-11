@@ -25,7 +25,7 @@
               <option value="oracle">Oracle</option>
             </select>
           </label>
-          <label class="db-field db-w2">
+          <label class="db-field">
             <span>主机</span>
             <input v-model="form.host" class="db-input" placeholder="192.168.x.x" />
           </label>

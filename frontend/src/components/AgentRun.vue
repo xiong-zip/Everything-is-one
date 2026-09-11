@@ -77,12 +77,29 @@
           <span v-if="run.final.durationMs" class="fp-duration">耗时 {{ fmtDuration(run.final.durationMs) }}</span>
         </div>
         <div class="fp-actions" v-if="run.final.output">
-          <button class="btn btn-ghost copy-btn" type="button" @click="copyFinal">
-            {{ copied ? '✓ 已复制' : '复制结果' }}
+          <button class="fp-icon-btn" type="button" :title="copied ? '已复制' : '复制结果'" :aria-label="copied ? '已复制' : '复制结果'" @click="copyFinal">
+            <svg v-if="copied" viewBox="0 0 20 20" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M4 10.5l4 4 8-9" />
+            </svg>
+            <svg v-else viewBox="0 0 20 20" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="7" y="7" width="9.5" height="9.5" rx="1.8" />
+              <path d="M13 7V4.6A1.6 1.6 0 0 0 11.4 3H4.6A1.6 1.6 0 0 0 3 4.6v6.8A1.6 1.6 0 0 0 4.6 13H7" />
+            </svg>
           </button>
-          <button class="btn btn-ghost" type="button" @click="download('txt')">下载 .txt</button>
-          <button class="btn btn-ghost" type="button" @click="download('md')">下载 .md</button>
-          <button class="btn btn-ghost" type="button" @click="printFinal">打印 / PDF</button>
+          <button class="fp-icon-btn" type="button" title="下载 .txt" aria-label="下载 txt" @click="download('txt')">
+            <svg viewBox="0 0 20 20" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M5 2.5h7l3 3V17.5H5z" />
+              <path d="M12 2.5v3h3" />
+              <text x="10" y="14.6" text-anchor="middle" font-size="5.2" font-family="monospace" fill="currentColor" stroke="none">TXT</text>
+            </svg>
+          </button>
+          <button class="fp-icon-btn" type="button" title="下载 .md" aria-label="下载 md" @click="download('md')">
+            <svg viewBox="0 0 20 20" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M5 2.5h7l3 3V17.5H5z" />
+              <path d="M12 2.5v3h3" />
+              <text x="10" y="14.6" text-anchor="middle" font-size="5.2" font-family="monospace" fill="currentColor" stroke="none">MD</text>
+            </svg>
+          </button>
         </div>
       </div>
     </div>
@@ -133,7 +150,7 @@ async function copyFinal() {
   setTimeout(() => (copied.value = false), 1600)
 }
 
-/* ---------- 报告导出：.txt / .md 下载 + 打印（浏览器打印为 PDF） ---------- */
+/* ---------- 报告导出：.txt / .md 下载 ---------- */
 
 function fileBase() {
   const d = new Date()
@@ -156,20 +173,5 @@ function download(ext) {
   a.click()
   a.remove()
   URL.revokeObjectURL(a.href)
-}
-
-function printFinal() {
-  const w = window.open('', '_blank', 'width=760,height=960')
-  if (!w) return
-  const esc = (s) => (s || '').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]))
-  w.document.title = fileBase()
-  w.document.write(
-    `<!doctype html><html><head><meta charset="utf-8"><title>${esc(w.document.title)}</title></head>` +
-    `<body style="margin:0"><pre style="font-family:Consolas,'Courier New',monospace;font-size:13px;` +
-    `line-height:1.9;white-space:pre-wrap;word-break:break-word;padding:36px 40px;">${esc(props.run.final.output)}</pre></body></html>`
-  )
-  w.document.close()
-  w.focus()
-  w.print()
 }
 </script>

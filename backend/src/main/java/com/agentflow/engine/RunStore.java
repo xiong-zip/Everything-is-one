@@ -78,6 +78,10 @@ public class RunStore {
             st.execute("CREATE INDEX IF NOT EXISTS idx_events_run ON events(run_id, seq)");
             // 上次进程未正常收尾的任务（停留 running）标记为中断，避免历史里永远"进行中"
             st.executeUpdate("UPDATE runs SET status = 'interrupted' WHERE status = 'running'");
+            // 多对话模型：runs 归属到 session（旧库补列，默认归入 default 对话）
+            try {
+                st.execute("ALTER TABLE runs ADD COLUMN session_id TEXT DEFAULT 'default'");
+            } catch (SQLException ignore) { /* 列已存在 */ }
             applyRetention(st);
         } catch (Exception ex) {
             log.error("初始化 SQLite 失败，历史记录将不可用：{}", ex.getMessage());
@@ -112,15 +116,16 @@ public class RunStore {
     }
 
     /** 新建运行记录，返回数据库 id；失败返回 -1（后续持久化自动跳过） */
-    public long createRun(String taskId, String command) {
+    public long createRun(String taskId, String command, String sessionId) {
         try (Connection c = open();
              PreparedStatement ps = c.prepareStatement(
-                     "INSERT INTO runs(task_id, command, status, created_at) VALUES(?, ?, 'running', ?)",
+                     "INSERT INTO runs(task_id, command, status, created_at, session_id) VALUES(?, ?, 'running', ?, ?)",
                      Statement.RETURN_GENERATED_KEYS)) {
             ps.setString(1, taskId);
             ps.setString(2, command);
             ps.setString(3, java.time.LocalDateTime.now()
                     .format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")));
+            ps.setString(4, sessionId == null || sessionId.isBlank() ? "default" : sessionId);
             ps.executeUpdate();
             try (ResultSet rs = ps.getGeneratedKeys()) {
                 return rs.next() ? rs.getLong(1) : -1;
@@ -128,6 +133,65 @@ public class RunStore {
         } catch (Exception ex) {
             log.warn("写入运行记录失败：{}", ex.getMessage());
             return -1;
+        }
+    }
+
+    /** 对话列表：一个 session = 一次对话，标题取首条指令，按最近活动倒序 */
+    public List<Map<String, Object>> listSessions() {
+        List<Map<String, Object>> out = new ArrayList<>();
+        String sql = "SELECT session_id, " +
+                "(SELECT command FROM runs r2 WHERE r2.session_id = r.session_id ORDER BY r2.id LIMIT 1) AS title, " +
+                "COUNT(*) AS cnt, MAX(created_at) AS last_time, " +
+                "SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) AS err_cnt, " +
+                "SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END) AS run_cnt " +
+                "FROM runs r GROUP BY session_id ORDER BY MAX(id) DESC LIMIT 100";
+        try (Connection c = open(); Statement st = c.createStatement(); ResultSet rs = st.executeQuery(sql)) {
+            while (rs.next()) {
+                Map<String, Object> m = new LinkedHashMap<>();
+                m.put("id", rs.getString("session_id"));
+                m.put("title", rs.getString("title"));
+                m.put("count", rs.getInt("cnt"));
+                m.put("lastTime", rs.getString("last_time"));
+                m.put("status", rs.getInt("run_cnt") > 0 ? "running"
+                        : rs.getInt("err_cnt") > 0 ? "error" : "done");
+                out.add(m);
+            }
+        } catch (Exception ex) {
+            log.warn("读取对话列表失败：{}", ex.getMessage());
+        }
+        return out;
+    }
+
+    /** 某个对话内的全部消息（按时间正序，供整段回放） */
+    public List<Map<String, Object>> listRunsBySession(String sessionId) {
+        List<Map<String, Object>> out = new ArrayList<>();
+        try (Connection c = open();
+             PreparedStatement ps = c.prepareStatement(
+                     "SELECT id, command, summary, status, created_at FROM runs WHERE session_id = ? ORDER BY id ASC")) {
+            ps.setString(1, sessionId);
+            try (ResultSet rs = ps.executeQuery()) {
+                collectRuns(rs, out);
+            }
+        } catch (Exception ex) {
+            log.warn("读取对话消息失败：{}", ex.getMessage());
+        }
+        return out;
+    }
+
+    /** 删除整个对话（含全部消息与事件） */
+    public void deleteSession(String sessionId) {
+        try (Connection c = open()) {
+            try (PreparedStatement ps = c.prepareStatement(
+                    "DELETE FROM events WHERE run_id IN (SELECT id FROM runs WHERE session_id = ?)")) {
+                ps.setString(1, sessionId);
+                ps.executeUpdate();
+            }
+            try (PreparedStatement ps = c.prepareStatement("DELETE FROM runs WHERE session_id = ?")) {
+                ps.setString(1, sessionId);
+                ps.executeUpdate();
+            }
+        } catch (Exception ex) {
+            log.warn("删除对话失败：{}", ex.getMessage());
         }
     }
 

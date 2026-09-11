@@ -46,7 +46,7 @@ public class AgentController {
         if (request == null || request.command() == null || request.command().isBlank()) {
             throw new IllegalArgumentException("command 不能为空");
         }
-        String taskId = engine.start(request.command().trim(), request.history(), request.mode());
+        String taskId = engine.start(request.command().trim(), request.history(), request.mode(), request.sessionId());
         return Map.of("taskId", taskId);
     }
 
@@ -81,6 +81,25 @@ public class AgentController {
     }
 
     /* ---------- 任务历史与回放 ---------- */
+
+    /** 对话列表：一个 session = 一次对话（含多条消息） */
+    @GetMapping("/sessions")
+    public List<Map<String, Object>> sessions() {
+        return runStore.listSessions();
+    }
+
+    /** 某个对话内的全部消息（按时间正序，供整段回放） */
+    @GetMapping("/sessions/{id}/runs")
+    public List<Map<String, Object>> sessionRuns(@PathVariable("id") String id) {
+        return runStore.listRunsBySession(id);
+    }
+
+    /** 删除整个对话 */
+    @DeleteMapping("/sessions/{id}")
+    public Map<String, String> deleteSession(@PathVariable("id") String id) {
+        runStore.deleteSession(id);
+        return Map.of("ok", "deleted");
+    }
 
     @GetMapping("/history")
     public List<Map<String, Object>> history(@RequestParam(defaultValue = "50") int limit,

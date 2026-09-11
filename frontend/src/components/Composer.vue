@@ -24,14 +24,6 @@
       </div>
       <div class="composer-meta">
         <div class="composer-left">
-          <button
-            class="wb-trigger"
-            type="button"
-            title="工作台：链路分析 / 数据库 / GitLab / 效能 / 晨报 / 工具"
-            @click="$emit('workbench')"
-          >
-            <span class="wb-trigger-ico" aria-hidden="true">☰</span>工作台
-          </button>
           <div class="example-chips" role="list" aria-label="示例任务">
             <span class="chip-label">试试：</span>
             <button
@@ -85,7 +77,7 @@ const props = defineProps({
   dbActive: { type: String, default: '' },
 })
 
-const emit = defineEmits(['send', 'stop', 'toggle-confirm', 'db-active', 'workbench'])
+const emit = defineEmits(['send', 'stop', 'toggle-confirm', 'db-active'])
 
 function typeName(t) {
   return { dameng: '达梦', mysql: 'MySQL', postgresql: 'PostgreSQL', oracle: 'Oracle' }[t] || t

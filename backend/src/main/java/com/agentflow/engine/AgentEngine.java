@@ -121,8 +121,13 @@ public class AgentEngine {
 
     /** 提交任务：立即后台执行（不依赖前端订阅），事件全部落库，随时可 attach 查看 */
     public String start(String command, List<Map<String, String>> history, String mode) {
+        return start(command, history, mode, null);
+    }
+
+    /** 提交任务（带对话归属 sessionId，历史列表按对话分组用） */
+    public String start(String command, List<Map<String, String>> history, String mode, String sessionId) {
         String taskId = UUID.randomUUID().toString();
-        long runId = runStore.createRun(taskId, command);
+        long runId = runStore.createRun(taskId, command, sessionId);
         RunSession session = new RunSession(taskId, runId, command, sanitizeHistory(history),
                 "confirm".equalsIgnoreCase(mode));
         sessions.put(taskId, session);

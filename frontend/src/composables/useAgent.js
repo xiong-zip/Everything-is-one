@@ -44,6 +44,19 @@ export function useAgent() {
   const busy = ref(false)
   const history = ref([])
   const historyLoading = ref(false)
+  // 多对话模型：当前对话 id（持久化，刷新后恢复所在对话）
+  const sessionId = ref(localStorage.getItem('af-session-id') || '')
+  function ensureSession() {
+    if (!sessionId.value) {
+      sessionId.value = (crypto.randomUUID ? crypto.randomUUID() : String(Date.now() + Math.random()))
+      localStorage.setItem('af-session-id', sessionId.value)
+    }
+    return sessionId.value
+  }
+  function setSession(id) {
+    sessionId.value = id
+    localStorage.setItem('af-session-id', id)
+  }
   // 确认模式：任务规划后先推送计划，用户确认/编辑再执行（本地记忆开关）
   const confirmMode = ref(localStorage.getItem('af-confirm-mode') === '1')
   watch(confirmMode, (v) => localStorage.setItem('af-confirm-mode', v ? '1' : '0'))
@@ -248,7 +261,7 @@ export function useAgent() {
       const res = await fetch(`${API_BASE}/run`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ command, history: turns, mode: confirmMode.value ? 'confirm' : 'auto' }),
+        body: JSON.stringify({ command, history: turns, mode: confirmMode.value ? 'confirm' : 'auto', sessionId: ensureSession() }),
       })
       if (!res.ok) throw new Error('创建任务失败')
       const data = await res.json()
@@ -338,11 +351,52 @@ export function useAgent() {
     }
   }
 
-  async function deleteHistoryRun(id) {
+  /* ---------- 多对话：列表 / 打开 / 新建 / 删除 ---------- */
+
+  /* 对话列表（history 复用为 sessions 容器，避免 App 大改） */
+  async function loadSessions() {
+    historyLoading.value = true
+    try {
+      const res = await fetch(`${API_BASE}/sessions`)
+      if (res.ok) history.value = await res.json()
+    } catch {
+      /* 静默降级 */
+    } finally {
+      historyLoading.value = false
+    }
+  }
+
+  /* 新建对话：清空消息区并切换到全新 session（首条消息发出时生效） */
+  function newSession() {
+    runs.value = []
+    setSession(crypto.randomUUID ? crypto.randomUUID() : String(Date.now() + Math.random()))
+    return sessionId.value
+  }
+
+  /* 打开一个历史对话：整段消息按序回放 */
+  async function openSession(id) {
+    setSession(id)
+    runs.value = []
+    try {
+      const res = await fetch(`${API_BASE}/sessions/${encodeURIComponent(id)}/runs`)
+      if (res.ok) {
+        const list = await res.json()
+        for (const item of list) {
+          await replayRun(item.id)
+        }
+      }
+    } catch {
+      /* 静默 */
+    }
+  }
+
+  async function deleteSession(id) {
     history.value = history.value.filter((h) => h.id !== id)
     try {
-      await fetch(`${API_BASE}/history/${id}`, { method: 'DELETE' })
+      await fetch(`${API_BASE}/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' })
     } catch { /* 静默 */ }
+    // 删的是当前对话：回到新对话
+    if (id === sessionId.value) newSession()
   }
 
   async function clearHistoryAll() {
@@ -350,6 +404,7 @@ export function useAgent() {
     try {
       await fetch(`${API_BASE}/history`, { method: 'DELETE' })
     } catch { /* 静默 */ }
+    newSession()
   }
 
   function clearAll() {
@@ -358,6 +413,7 @@ export function useAgent() {
 
   return {
     runs, busy, runAgent, stopRun, clearAll, confirmMode, confirmPlan,
-    replayRun, history, historyLoading, loadHistory, deleteHistoryRun, clearHistoryAll,
+    replayRun, history, historyLoading, loadHistory, clearHistoryAll,
+    sessionId, loadSessions, newSession, openSession, deleteSession,
   }
 }

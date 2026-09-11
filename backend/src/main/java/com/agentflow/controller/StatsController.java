@@ -24,6 +24,7 @@ public class StatsController {
     private volatile Map<String, Object> cache;
     private volatile long cacheAt;
     private volatile int cacheDays = -1;
+    private volatile String cacheAccount = "";
 
     public StatsController(GitLabTool gitLabTool) {
         this.gitLabTool = gitLabTool;
@@ -33,7 +34,9 @@ public class StatsController {
     public Map<String, Object> heatmap(@RequestParam(defaultValue = "182") int days) {
         days = Math.max(30, Math.min(days, 400));
         Map<String, Object> cached = cache;
-        if (cached != null && cacheDays == days && System.currentTimeMillis() - cacheAt < CACHE_MS) {
+        String account = gitLabTool.tokenFingerprint();
+        if (cached != null && cacheDays == days && account.equals(cacheAccount)
+                && System.currentTimeMillis() - cacheAt < CACHE_MS) {
             return cached;
         }
         Map<String, Object> out = new LinkedHashMap<>();
@@ -84,6 +87,7 @@ public class StatsController {
     private void cache(Map<String, Object> data, int days) {
         this.cache = data;
         this.cacheDays = days;
+        this.cacheAccount = gitLabTool.tokenFingerprint();
         this.cacheAt = System.currentTimeMillis();
     }
 }

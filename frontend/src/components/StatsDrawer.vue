@@ -18,31 +18,34 @@
         </template>
         <template v-else>
           <div class="hm-summary">
-            <div class="hm-stat"><b>{{ data.total }}</b><span>总提交</span></div>
+            <div class="hm-stat"><b>{{ data.total }}</b><span>总贡献</span></div>
             <div class="hm-stat"><b>{{ data.activeDays }}</b><span>活跃天</span></div>
             <div class="hm-stat"><b>{{ data.bestStreak }}</b><span>最长连续</span></div>
           </div>
 
-          <!-- 热力图：列 = 周，行 = 周一~周日 -->
+          <!-- 热力图：单一网格，列 = 周（首列为星期标签），行 = 周一~周日，首行为月份 -->
           <div class="hm-scroll">
-            <div class="hm-months">
-              <span v-for="(m, i) in monthLabels" :key="i" class="hm-month" :style="{ gridColumn: m.col + ' / span 1' }">{{ m.label }}</span>
-            </div>
-            <div class="hm-grid-wrap">
-              <div class="hm-weekdays">
-                <span>一</span><span></span><span>三</span><span></span><span>五</span><span></span><span></span>
-              </div>
-              <div class="hm-grid">
-                <div v-for="(week, wi) in weeks" :key="wi" class="hm-week">
-                  <div
-                    v-for="(cell, di) in week"
-                    :key="di"
-                    class="hm-cell"
-                    :class="'lv' + cell.level"
-                    :title="cell.date ? cell.date + ' · ' + cell.count + ' 次提交' : ''"
-                  ></div>
-                </div>
-              </div>
+            <div class="hm-grid" :style="{ gridTemplateColumns: '18px repeat(' + weeks.length + ', minmax(0, 1fr))' }">
+              <span
+                v-for="(m, i) in monthLabels"
+                :key="'m' + i"
+                class="hm-month"
+                :style="{ gridColumn: m.col, gridRow: 1 }"
+              >{{ m.label }}</span>
+              <span
+                v-for="(wd, ri) in ['一', '', '三', '', '五', '', '日']"
+                :key="'w' + ri"
+                class="hm-wd"
+                :style="{ gridColumn: 1, gridRow: ri + 2 }"
+              >{{ wd }}</span>
+              <div
+                v-for="cell in flatCells"
+                :key="cell.date"
+                class="hm-cell"
+                :class="'lv' + cell.level"
+                :style="{ gridColumn: cell.col + 2, gridRow: cell.row + 2 }"
+                :title="cell.date + ' · ' + cell.count + ' 个贡献'"
+              ></div>
             </div>
           </div>
 
@@ -73,7 +76,9 @@ const loading = ref(false)
 async function load() {
   loading.value = true
   try {
-    const res = await fetch('/api/stats/heatmap')
+    // 起点对齐到周一，保证热力图第一列是完整一周，避免首列只在部分行出现
+    const dow = (new Date().getDay() + 6) % 7 // 周一=0 … 周日=6
+    const res = await fetch('/api/stats/heatmap?days=' + (365 + dow))
     if (res.ok) data.value = await res.json()
   } catch { /* 静默 */ } finally {
     loading.value = false
@@ -95,7 +100,7 @@ const weeks = computed(() => {
   const gridStart = new Date(start.getTime() - startDow * dayMs)
   const weeks = []
   let cur = gridStart
-  while (cur <= end || weeks[weeks.length - 1]?.some(Boolean)) {
+  while (cur <= end || weeks[weeks.length - 1]?.some((c) => c && c.date)) {
     const week = []
     for (let i = 0; i < 7; i++) {
       const d = new Date(cur.getTime() + i * dayMs)
@@ -109,9 +114,19 @@ const weeks = computed(() => {
     }
     weeks.push(week)
     cur = new Date(cur.getTime() + 7 * dayMs)
-    if (cur > end && weeks.length > 60) break
   }
   return weeks
+})
+
+/* 展平为 (col=周, row=星期) 坐标，跳过补位空格 */
+const flatCells = computed(() => {
+  const out = []
+  weeks.value.forEach((week, wi) => {
+    week.forEach((cell, di) => {
+      if (cell.date) out.push({ ...cell, col: wi, row: di })
+    })
+  })
+  return out
 })
 
 const monthLabels = computed(() => {
@@ -122,7 +137,7 @@ const monthLabels = computed(() => {
     if (!first) return
     const m = new Date(first.date + 'T00:00:00').getMonth()
     if (m !== lastMonth) {
-      labels.push({ col: i + 1, label: (m + 1) + '月' })
+      labels.push({ col: i + 2, label: (m + 1) + '月' })
       lastMonth = m
     }
   })
