@@ -17,6 +17,7 @@
 | **GitLab 只读查询 + 受控写操作** | 提交/项目/Issue/MR/流水线查询；创建 Issue、评论等低风险写操作需人工确认 |
 | **数据库透视（内置 db-architect）** | 自然语言查库表结构 / DDL / 按中文名找表 / 导出数据为 INSERT / ER 图 / 跨库结构比对，支持达梦、MySQL、Oracle、PostgreSQL；**连接配置在界面里管理**（工作台 → 数据库连接），无需改任何配置文件 |
 | **SigNoz 链路分析 + 故障案例知识库** | 给一个 trace ID 自动查 span 树与 ERROR/WARN 日志，输出根因、失败传播链、耗时与状态矛盾（如 HTTP 200 但业务失败）；默认 24h 查不到自动扩到 7d；分析前自动比对 `docs/incidents/` 知识库，命中已知故障直接复用历史处置；可将结论归档为案例（同一故障模式累加次数，不重复建档，归档需人工放行） |
+| **K8s 运维排查（只读）** | 内置 `k8s.query` 工具，经 **Kuboard** 面板的 `/k8s-api` 代理访问集群：Pod/Deployment/Service/Job 列表与异常状态（CrashLoop/Pending/未就绪自动标 ⚠）、Pod 日志（含崩溃前的 previous 日志、关键词过滤、按服务名跨命名空间反查实例）、命名空间 Warning 事件、节点状态；**关键字未命中时自动停止后续步骤**，按名称相似度（子串/编辑距离）给出相近候选卡片反问用户，点选即重跑；与链路分析联动可实现「trace 定位服务 → 看 Pod 状态/日志/事件」一条龙排查 |
 | **工作台（窗口弹窗）** | 入口在左下角输入区，打开为居中窗口：**左侧菜单 + 右侧内容**，含链路分析记录、数据库连接、GitLab 账户、效能热力图、晨报机器人、工具管理；支持 Esc / 点遮罩 / 关闭按钮退出 |
 | **链路分析记录** | 每次链路分析自动落库（按 trace ID 去重，重复分析累加次数）：失败点、指纹、涉及服务、耗时、环境、命中的案例、分析摘要全文；可按 trace ID / 失败点 / 指纹 / 服务 / 案例号检索，并统计失败数与高频故障指纹 |
 | **GitLab 效能日报/周报** | 拉取时间窗内逐条提交，LLM 归纳成固定格式报告，支持「今天/昨天/本周」 |
@@ -130,6 +131,8 @@ start.bat
 | `AGENTFLOW_MAX_RUNS` | 否 | 历史条数上限（默认 1000，0 = 不限制） |
 | `AGENTFLOW_DEPT` | 否 | 报告抬头部门名（默认 `中台研发部`） |
 | `SIGNOZ_MCP_URL` | 否 | SigNoz MCP 地址，用于链路分析工具（默认 `http://192.168.2.111:18000/mcp`，需内网可达） |
+| `KUBOARD_URL` / `KUBOARD_USERNAME` / `KUBOARD_PASSWORD` | 否 | Kuboard 面板地址与账号，启用 `k8s.query` 运维排查工具（经其代理只读访问集群） |
+| `KUBOARD_CLUSTER` | 否 | 默认操作的集群名（Kuboard 导入时的名称，默认 `dev`；完整列表可用 `k8s.query` 的 `clusters` 查询） |
 | `SIGNOZ_TIME_RANGE` / `SIGNOZ_FALLBACK_RANGE` / `SIGNOZ_LOG_LIMIT` | 否 | 链路查询时间窗、查不到时的降级窗口、补查日志条数（默认 `24h` / `7d` / `10`；两天前的链路只有 `7d` 才查得到） |
 | `AGENTFLOW_INCIDENT_KB` | 否 | 故障案例知识库目录（默认 `./docs/incidents`，相对路径自动锚定项目根） |
 | `AGENTFLOW_ANALYSIS_MAX` | 否 | 链路分析记录保留条数上限（默认 `2000`，工作台 → 链路分析 面板的数据） |

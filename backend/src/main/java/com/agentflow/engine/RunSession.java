@@ -25,6 +25,9 @@ public class RunSession {
     private final AtomicBoolean finished = new AtomicBoolean(false);
     private final boolean confirmMode;
 
+    /** 候选澄清暂停：工具未直接命中并给出候选后，剩余步骤不再执行，等待用户点选后重跑 */
+    private volatile String clarifyQuestion;
+
     /** 当前订阅连接（0 或 1 个）；attach/detach 与事件推送共用 session 锁保证不重不漏 */
     private volatile SseEmitter emitter;
 
@@ -83,6 +86,19 @@ public class RunSession {
 
     boolean isCancelled() {
         return cancelled.get();
+    }
+
+    /** 工具返回候选澄清时记录问题；后续步骤与 LLM 汇总跳过，等待用户点选后重跑 */
+    void pauseForClarify(String question) {
+        this.clarifyQuestion = question;
+    }
+
+    boolean isClarifyPaused() {
+        return clarifyQuestion != null;
+    }
+
+    String clarifyQuestion() {
+        return clarifyQuestion;
     }
 
     void cancel() {

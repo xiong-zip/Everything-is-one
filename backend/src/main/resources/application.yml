@@ -48,6 +48,13 @@ agentflow:
     kb-path: ${AGENTFLOW_INCIDENT_KB:./docs/incidents}
     # 链路分析记录保留条数上限（工作台 → 链路分析 面板的数据，与任务历史共用同一个 SQLite）
     analysis-max: ${AGENTFLOW_ANALYSIS_MAX:2000}
+  kuboard:
+    # K8s 运维排查（内置 k8s.query 工具）：Kuboard 面板地址与账号，工具经其 /k8s-api 代理访问集群（只读）
+    url: ${KUBOARD_URL:}
+    username: ${KUBOARD_USERNAME:}
+    password: ${KUBOARD_PASSWORD:}
+    # 默认操作的集群名（Kuboard 中导入时的集群名，完整列表用 k8s.query action=clusters 查询）
+    cluster: ${KUBOARD_CLUSTER:dev}
   schedule:
     morning-report:
       # 自动晨报机器人：定时生成昨日日报并推送（需配置 GITLAB_TOKEN；推送需配置 Webhook）

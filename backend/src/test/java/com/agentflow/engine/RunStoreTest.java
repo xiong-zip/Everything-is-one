@@ -26,7 +26,7 @@ class RunStoreTest {
         RunStore store = newStore();
         store.init();
 
-        long runId = store.createRun("task-1", "查天气");
+        long runId = store.createRun("task-1", "查天气", "s-1");
         assertTrue(runId > 0);
 
         store.saveEvent(runId, 0, "status", Map.of("text", "start"));
@@ -46,7 +46,7 @@ class RunStoreTest {
     void listEventsAfterSeq() {
         RunStore store = newStore();
         store.init();
-        long runId = store.createRun("task-2", "写文案");
+        long runId = store.createRun("task-2", "写文案", "s-1");
         for (int i = 0; i < 5; i++) {
             store.saveEvent(runId, i, "status", Map.of("seq", i));
         }
@@ -60,8 +60,8 @@ class RunStoreTest {
     void listRunsByKeyword() {
         RunStore store = newStore();
         store.init();
-        long a = store.createRun("t-a", "查厦门今天天气");
-        long b = store.createRun("t-b", "写一封请假邮件");
+        long a = store.createRun("t-a", "查厦门今天天气", "s-1");
+        long b = store.createRun("t-b", "写一封请假邮件", "s-1");
         store.finishRun(a, "done", "已查询厦门天气", "…");
         store.finishRun(b, "done", "请假邮件已生成", "…");
 
@@ -76,7 +76,7 @@ class RunStoreTest {
     void findByTaskIdAndMissing() {
         RunStore store = newStore();
         store.init();
-        store.createRun("task-3", "查股价");
+        store.createRun("task-3", "查股价", "s-1");
         assertNotNull(store.findRunIdByTaskId("task-3"));
         assertNull(store.findRunIdByTaskId("no-such"));
     }

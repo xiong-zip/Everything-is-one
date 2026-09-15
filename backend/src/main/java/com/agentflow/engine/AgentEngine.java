@@ -385,6 +385,9 @@ public class AgentEngine {
                     recorder.send("step", map("index", stepIdx, "total", MAX_REACT_STEPS,
                             "kind", s.kind(), "tag", s.tag(), "title", s.title()));
                     String out = executeStep(recorder, session, command, intent, histBlock, s, stepIdx, toolResults, writeOutput);
+                    if (session.isClarifyPaused()) {
+                        break;
+                    }
                     if (isWrite) {
                         writeOutput = out;
                         wrote = true;
@@ -392,7 +395,7 @@ public class AgentEngine {
                     }
                     stepIdx++;
                 }
-                if (!wrote && writeOutput == null) {
+                if (!wrote && writeOutput == null && !session.isClarifyPaused()) {
                     // 决策循环未产出交付物：兜底补一个 write 步
                     recorder.send("step", map("index", stepIdx, "total", MAX_REACT_STEPS,
                             "kind", "write", "tag", "内容生成", "title", "汇总生成最终交付内容"));
@@ -409,10 +412,27 @@ public class AgentEngine {
                     } else {
                         writeOutput = executeStep(recorder, session, command, intent, histBlock, steps.get(i), i, toolResults, writeOutput);
                     }
+                    if (session.isClarifyPaused()) {
+                        break;
+                    }
                     i = j;
                 }
             }
             recorder.send("phase", map("name", "execute", "state", "done"));
+
+            /* 澄清暂停：工具未直接命中并给出候选 → 不再执行剩余步骤、不做 LLM 汇总，
+               等待用户在前端候选卡上点选（点选即以候选指令重新发起任务） */
+            if (session.isClarifyPaused()) {
+                recorder.send("status", map("text", "未直接命中，已给出候选，等待选择", "cls", "is-done"));
+                String question = session.clarifyQuestion();
+                recorder.send("done", map(
+                        "summary", question,
+                        "output", "",
+                        "meta", List.of("已暂停 · 等待选择候选")));
+                recorder.finish("done", question, "");
+                completeEmitter(session);
+                return;
+            }
 
             /* 阶段四：结果汇总 */
             recorder.send("phase", map("name", "merge", "state", "active"));
@@ -751,10 +771,12 @@ public class AgentEngine {
             recorder.send("result", map("index", index, "resultType", tr.resultType(),
                     "result", tr.result() == null ? Map.of() : tr.result(),
                     "list", tr.list() == null ? List.of() : tr.list()));
-            // 未命中但带候选：推 clarify 事件，前端渲染选项卡（点选即改写重跑）
+            // 未命中但带候选：推 clarify 事件，前端渲染选项卡（点选即改写重跑）；
+            // 同时暂停本任务剩余步骤，避免在目标缺失的情况下继续推理/汇总
             if (tr.clarify() != null && tr.clarify().options() != null && !tr.clarify().options().isEmpty()) {
                 recorder.send("clarify", map("question", tr.clarify().question(),
                         "options", tr.clarify().options()));
+                session.pauseForClarify(tr.clarify().question());
             }
             recorder.send("step-state", map("index", index, "state", "done"));
             return writeOutput;
