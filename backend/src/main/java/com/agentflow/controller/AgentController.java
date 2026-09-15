@@ -16,6 +16,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -88,10 +89,23 @@ public class AgentController {
         return runStore.listSessions();
     }
 
-    /** 某个对话内的全部消息（按时间正序，供整段回放） */
+    /**
+     * 某个对话内的消息（分页，按时间正序）：默认取最近 limit 条，before 传当前最早一条的
+     * run id 继续往回取。事件内联返回，前端一次请求即可整页回放，避免逐条 N+1 拉取。
+     */
     @GetMapping("/sessions/{id}/runs")
-    public List<Map<String, Object>> sessionRuns(@PathVariable("id") String id) {
-        return runStore.listRunsBySession(id);
+    public Map<String, Object> sessionRuns(@PathVariable("id") String id,
+                                           @RequestParam(defaultValue = "20") int limit,
+                                           @RequestParam(name = "before", required = false) Long before) {
+        RunStore.SessionPage page = runStore.listRunsBySessionPage(id, Math.min(Math.max(limit, 1), 100), before);
+        List<Map<String, Object>> runsOut = new ArrayList<>();
+        for (Map<String, Object> r : page.runs()) {
+            Map<String, Object> full = runStore.getRun(((Number) r.get("id")).longValue());
+            if (full != null) {
+                runsOut.add(full);
+            }
+        }
+        return Map.of("runs", runsOut, "hasMore", page.hasMore());
     }
 
     /** 删除整个对话 */

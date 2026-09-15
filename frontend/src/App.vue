@@ -75,7 +75,10 @@
 
       <!-- 聊天区：左缘贴一条消息导航竖条（每条消息一条横线，悬停波浪放大） -->
       <div class="chat-area">
-        <div class="llm-float" :class="llm.cls">{{ llm.text }}</div>
+        <!-- 模型选择浮层胶囊：下拉切换当前使用的模型（档案在工作台 → 模型接入 维护） -->
+        <div class="llm-float-wrap">
+          <ModelPicker />
+        </div>
         <nav v-if="runs.length" class="msg-rail" aria-label="消息导航">
           <div
             v-for="m in msgMarks"
@@ -119,7 +122,14 @@
             </div>
           </div>
 
-          <div v-for="run in runs" :key="run.id" class="turn" :data-run-id="run.id">
+          <!-- 有更早的消息时按需加载：点一下取回上一页，滚动位置保持在原处 -->
+          <div v-if="sessionHasMore && runs.length" class="load-earlier">
+            <button type="button" :disabled="sessionLoadingMore" @click="onLoadEarlier">
+              {{ sessionLoadingMore ? '加载中…' : '↑ 加载更早的消息' }}
+            </button>
+          </div>
+
+          <div v-for="run in runs" :key="run.id" class="turn" :class="{ replay: run.replayed }" :data-run-id="run.id">
             <div class="user-bubble-row">
               <div class="user-bubble">{{ run.command }}</div>
             </div>
@@ -138,6 +148,7 @@
 import { nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import AgentRun from './components/AgentRun.vue'
 import Composer from './components/Composer.vue'
+import ModelPicker from './components/ModelPicker.vue'
 import WorkbenchModal from './components/WorkbenchModal.vue'
 import ToastHost from './components/ToastHost.vue'
 import { useAgent } from './composables/useAgent'
@@ -205,6 +216,7 @@ const {
   runs, busy, runAgent, stopRun, confirmMode, confirmPlan,
   replayRun, history, historyLoading, clearHistoryAll,
   sessionId, loadSessions, newSession, openSession, deleteSession,
+  sessionHasMore, sessionLoadingMore, loadEarlier,
 } = useAgent()
 
 /* 发送新消息：直接执行（消息横线自动出现在左缘导航条） */
@@ -309,14 +321,27 @@ function onNewSession() {
   newSession()
 }
 
-/* 打开历史对话：整段消息回放到聊天区 */
+/* 打开历史对话：整段消息回放到聊天区。
+   渲染完成直接瞬时定位到底部（最新消息结尾）——chat-main 是 smooth 滚动，
+   走默认跟随会把整段对话从头滑到尾，切换体验极差，这里必须 instant。 */
+async function openSessionAtBottom(id) {
+  suppressAutoScroll = true
+  try {
+    await openSession(id)
+    await nextTick()
+    const sc = scrollEl.value
+    if (sc) sc.scrollTo({ top: sc.scrollHeight, behavior: 'instant' })
+    updateMsgMarks()
+  } finally {
+    suppressAutoScroll = false
+  }
+}
+
 async function onOpenSession(id) {
   if (busy.value || id === sessionId.value) return
   activeId.value = id
   if (typeof window !== 'undefined' && window.innerWidth <= 900) railOpen.value = false
-  await openSession(id)
-  await nextTick()
-  updateMsgMarks()
+  await openSessionAtBottom(id)
 }
 
 /* 删除对话（删的是当前对话时自动落到新对话） */
@@ -331,15 +356,35 @@ function confirmClear() {
   }
 }
 
-/* 新一轮开始、步骤增加或汇总出现时，滚动到底部跟随最新进展，并刷新消息导航条 */
+/* 新一轮开始、步骤增加或汇总出现时，滚动到底部跟随最新进展，并刷新消息导航条；
+   加载更早消息属于向上补历史，不触发跟随（由 onLoadEarlier 自行保持滚动位置） */
+let suppressAutoScroll = false
 watch(
   () => runs.value.map((r) => `${r.steps.length}-${r.final.visible ? 1 : 0}`).join(','),
   async () => {
     await nextTick()
+    if (suppressAutoScroll) return
     if (scrollEl.value) scrollEl.value.scrollTop = scrollEl.value.scrollHeight
     updateMsgMarks()
   }
 )
+
+/* 加载更早的消息：记录当前滚动位置，插入上一页后锚回原位，视觉上不跳动
+   （chat-main 是 smooth 滚动，这里必须 instant，否则锚点会滑行动画跑偏） */
+async function onLoadEarlier() {
+  const sc = scrollEl.value
+  const prevHeight = sc ? sc.scrollHeight : 0
+  const prevTop = sc ? sc.scrollTop : 0
+  suppressAutoScroll = true
+  try {
+    await loadEarlier()
+    await nextTick()
+    if (sc) sc.scrollTo({ top: prevTop + (sc.scrollHeight - prevHeight), behavior: 'instant' })
+    updateMsgMarks()
+  } finally {
+    suppressAutoScroll = false
+  }
+}
 
 /* 视口尺寸变化时重算横线位置 */
 if (typeof window !== 'undefined') {
@@ -369,13 +414,15 @@ async function loadLlmInfo() {
 
 onMounted(async () => {
   document.addEventListener('mousemove', onGlobalMouseMove)
+  // 模型接入面板里的增删改/切换会广播该事件，顶栏徽标即时刷新
+  window.addEventListener('af-llm-changed', loadLlmInfo)
   loadDbMeta()
   loadLlmInfo()
   // 恢复上次的对话：存在则整段回放，否则落到新对话
   await loadSessions()
   const last = localStorage.getItem('af-session-id') || ''
   if (last && history.value.some((s) => s.id === last)) {
-    await openSession(last)
+    await openSessionAtBottom(last)
     await nextTick()
     updateMsgMarks()
   } else if (!last) {
@@ -388,5 +435,6 @@ onMounted(async () => {
 })
 onUnmounted(() => {
   document.removeEventListener('mousemove', onGlobalMouseMove)
+  window.removeEventListener('af-llm-changed', loadLlmInfo)
 })
 </script>

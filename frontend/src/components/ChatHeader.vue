@@ -13,7 +13,7 @@
         <span class="brand-sub">AI 任务助手</span>
       </div>
       <div class="header-tools">
-        <span class="llm-badge" :class="llm.cls">{{ llm.text }}</span>
+        <ModelPicker />
         <button v-if="hasRuns" class="clear-btn" type="button" @click="$emit('clear')">清空对话</button>
       </div>
     </div>
@@ -21,7 +21,9 @@
 </template>
 
 <script setup>
-/* 工作台入口已移到左下角输入区（见 Composer），顶栏只保留任务历史与清空对话 */
+/* 工作台入口已移到左下角输入区（见 Composer），顶栏保留任务历史、模型选择与清空对话 */
+import ModelPicker from './ModelPicker.vue'
+
 defineProps({
   llm: { type: Object, required: true },
   hasRuns: { type: Boolean, default: false },

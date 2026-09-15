@@ -21,6 +21,7 @@
       <div class="wb-body">
         <button class="wb-close" type="button" aria-label="关闭工作台" title="关闭（Esc）" @click="$emit('close')">✕</button>
         <TraceAnalysisPane v-if="active === 'trace'" @run="$emit('run', $event)" />
+        <SettingsPane v-else-if="active === 'general'" />
         <DbDrawer v-else-if="active === 'db'" embedded @active-changed="$emit('db-active-changed', $event)" />
         <GitlabDrawer v-else-if="active === 'gitlab'" embedded />
         <StatsDrawer v-else-if="active === 'stats'" embedded />
@@ -35,6 +36,7 @@
 <script setup>
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 import TraceAnalysisPane from './TraceAnalysisPane.vue'
+import SettingsPane from './SettingsPane.vue'
 import DbDrawer from './DbDrawer.vue'
 import GitlabDrawer from './GitlabDrawer.vue'
 import StatsDrawer from './StatsDrawer.vue'
@@ -50,6 +52,7 @@ const emit = defineEmits(['close', 'run', 'db-active-changed'])
 
 const tabs = [
   { key: 'trace', icon: '🔗', label: '链路分析' },
+  { key: 'general', icon: '✦', label: '通用设置' },
   { key: 'db', icon: '🗄', label: '数据库连接' },
   { key: 'gitlab', icon: '🦊', label: 'GitLab 账户' },
   { key: 'stats', icon: '▦', label: '效能热力图' },

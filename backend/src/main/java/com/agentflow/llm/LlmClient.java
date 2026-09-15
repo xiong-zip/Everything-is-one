@@ -111,6 +111,11 @@ public class LlmClient {
         return model;
     }
 
+    /** .env 默认配置的模型名（页面下拉框“恢复默认”行的展示用） */
+    public String getEnvModel() {
+        return envModel;
+    }
+
     public String getBaseUrl() {
         return baseUrl;
     }

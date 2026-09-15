@@ -17,6 +17,7 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -176,6 +177,43 @@ public class RunStore {
             log.warn("读取对话消息失败：{}", ex.getMessage());
         }
         return out;
+    }
+
+    /** 分页页结果：runs 按时间正序，hasMore 表示更早的消息还有 */
+    public record SessionPage(List<Map<String, Object>> runs, boolean hasMore) {
+    }
+
+    /**
+     * 按会话分页读消息（从最新往回取一页，返回时恢复正序）。
+     * beforeId 为空取最新一页；多取一条探测 hasMore。
+     */
+    public SessionPage listRunsBySessionPage(String sessionId, int limit, Long beforeId) {
+        List<Map<String, Object>> desc = new ArrayList<>();
+        StringBuilder sql = new StringBuilder(
+                "SELECT id, command, summary, status, created_at FROM runs WHERE session_id = ?");
+        if (beforeId != null) {
+            sql.append(" AND id < ?");
+        }
+        sql.append(" ORDER BY id DESC LIMIT ?");
+        try (Connection c = open(); PreparedStatement ps = c.prepareStatement(sql.toString())) {
+            int i = 1;
+            ps.setString(i++, sessionId);
+            if (beforeId != null) {
+                ps.setLong(i++, beforeId);
+            }
+            ps.setInt(i, limit + 1);
+            try (ResultSet rs = ps.executeQuery()) {
+                collectRuns(rs, desc);
+            }
+        } catch (Exception ex) {
+            log.warn("分页读取对话消息失败：{}", ex.getMessage());
+        }
+        boolean hasMore = desc.size() > limit;
+        if (hasMore) {
+            desc = new ArrayList<>(desc.subList(0, limit));
+        }
+        Collections.reverse(desc);
+        return new SessionPage(desc, hasMore);
     }
 
     /** 删除整个对话（含全部消息与事件） */

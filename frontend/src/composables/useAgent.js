@@ -4,6 +4,8 @@ import { reactive, ref, watch } from 'vue'
 
 const API_BASE = '/api/agent'
 const HISTORY_TURNS = 5
+/* 对话消息分页：打开对话默认加载最近 N 条，更早的按需加载 */
+const PAGE_SIZE = 20
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const reduceMotion = () => window.matchMedia('(prefers-reduced-motion: reduce)').matches
@@ -44,6 +46,9 @@ export function useAgent() {
   const busy = ref(false)
   const history = ref([])
   const historyLoading = ref(false)
+  // 对话分页状态：是否还有更早的消息可加载、加载中标记
+  const sessionHasMore = ref(false)
+  const sessionLoadingMore = ref(false)
   // 多对话模型：当前对话 id（持久化，刷新后恢复所在对话）
   const sessionId = ref(localStorage.getItem('af-session-id') || '')
   function ensureSession() {
@@ -369,24 +374,63 @@ export function useAgent() {
   /* 新建对话：清空消息区并切换到全新 session（首条消息发出时生效） */
   function newSession() {
     runs.value = []
+    sessionHasMore.value = false
+    sessionLoadingMore.value = false
     setSession(crypto.randomUUID ? crypto.randomUUID() : String(Date.now() + Math.random()))
     return sessionId.value
   }
 
-  /* 打开一个历史对话：整段消息按序回放 */
+  /* 打开一个历史对话：分页回放——默认最近 PAGE_SIZE 条，更早的在聊天区顶部按需加载 */
   async function openSession(id) {
     setSession(id)
     runs.value = []
+    sessionHasMore.value = false
     try {
-      const res = await fetch(`${API_BASE}/sessions/${encodeURIComponent(id)}/runs`)
+      const res = await fetch(`${API_BASE}/sessions/${encodeURIComponent(id)}/runs?limit=${PAGE_SIZE}`)
       if (res.ok) {
-        const list = await res.json()
-        for (const item of list) {
-          await replayRun(item.id)
-        }
+        renderSessionPage(await res.json(), false)
       }
     } catch {
       /* 静默 */
+    }
+  }
+
+  /* 一页消息一次性回放（事件由接口内联返回），prepend=true 时插到已有消息前面 */
+  function renderSessionPage(data, prepend) {
+    const pageRuns = []
+    for (const item of data.runs || []) {
+      const run = reactive(newRun(++runSeq, item.command, true))
+      run.dbId = item.id // 后端 run id，供「加载更早」分页游标使用
+      const handlers = handlersFor(run, true)
+      for (const e of item.events || []) {
+        dispatch(handlers, e.event, e.data)
+      }
+      // 回放中未等到确认结果的计划卡不再显示等待态
+      if (run.planProposal && run.planProposal.waiting) {
+        run.planProposal.waiting = false
+      }
+      run.status = { text: '历史回放 · ' + (item.createdAt || ''), cls: 'is-done' }
+      pageRuns.push(run)
+    }
+    runs.value = prepend ? [...pageRuns, ...runs.value] : pageRuns
+    sessionHasMore.value = !!data.hasMore
+  }
+
+  /* 按需加载更早的消息：以当前最早一条为游标往回取一页 */
+  async function loadEarlier() {
+    if (!sessionId.value || !sessionHasMore.value || sessionLoadingMore.value) return
+    const first = runs.value.find(Boolean)
+    if (!first || !first.dbId) return
+    sessionLoadingMore.value = true
+    try {
+      const res = await fetch(`${API_BASE}/sessions/${encodeURIComponent(sessionId.value)}/runs?limit=${PAGE_SIZE}&before=${first.dbId}`)
+      if (res.ok) {
+        renderSessionPage(await res.json(), true)
+      }
+    } catch {
+      /* 静默 */
+    } finally {
+      sessionLoadingMore.value = false
     }
   }
 
@@ -415,5 +459,6 @@ export function useAgent() {
     runs, busy, runAgent, stopRun, clearAll, confirmMode, confirmPlan,
     replayRun, history, historyLoading, loadHistory, clearHistoryAll,
     sessionId, loadSessions, newSession, openSession, deleteSession,
+    sessionHasMore, sessionLoadingMore, loadEarlier,
   }
 }
