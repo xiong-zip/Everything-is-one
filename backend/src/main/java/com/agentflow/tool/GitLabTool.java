@@ -48,7 +48,7 @@ public class GitLabTool implements Tool {
     }
 
     /** 当前生效 token：「GitLab 账户」配置的账户优先，未配置时回退 .env 的 GITLAB_TOKEN */
-    private String currentToken() {
+    String currentToken() {
         String t = accountStore.activeToken();
         return t == null || t.isBlank() ? envToken : t.trim();
     }
@@ -533,7 +533,41 @@ public class GitLabTool implements Tool {
         return new ToolResult("list", null, list, "最近活跃的 " + list.size() + " 个 GitLab 项目");
     }
 
-    private JsonNode findProject(String keyword) throws Exception {
+    /** 项目搜索原始结果（最多 5 个），供服务映射推断、澄清卡与「服务映射」面板复用 */
+    public JsonNode searchProjects(String keyword) throws Exception {
+        return getJson("/api/v4/projects?search=" + enc(keyword) + "&per_page=5&simple=true");
+    }
+
+    /** 按完整路径（group/project）解析出唯一项目，找不到返回 null */
+    public JsonNode projectByPath(String fullPath) throws Exception {
+        String p = fullPath.replaceAll("^/+|/+$", "");
+        String last = p.substring(p.lastIndexOf('/') + 1);
+        JsonNode arr = searchProjects(last);
+        for (JsonNode n : arr) {
+            if (n.path("path_with_namespace").asText("").equalsIgnoreCase(p)) {
+                return n;
+            }
+        }
+        return null;
+    }
+
+    /** 时间窗内项目默认分支的提交（最多 100 条），变更关联用；时间边界由 GitLab 按 since/until 过滤 */
+    List<JsonNode> fetchProjectCommits(long projectId, OffsetDateTime since, OffsetDateTime until) throws Exception {
+        JsonNode commits = getJson("/api/v4/projects/" + projectId + "/repository/commits"
+                + "?since=" + enc(since.toString()) + "&until=" + enc(until.toString()) + "&per_page=100");
+        List<JsonNode> out = new ArrayList<>();
+        for (JsonNode c : commits) {
+            out.add(c);
+        }
+        return out;
+    }
+
+    /** 项目最近流水线（最多 N 条），变更关联判断窗口内是否有失败构建用 */
+    JsonNode fetchPipelines(long projectId, int limit) throws Exception {
+        return getJson("/api/v4/projects/" + projectId + "/pipelines?per_page=" + limit);
+    }
+
+    JsonNode findProject(String keyword) throws Exception {
         JsonNode arr = getJson("/api/v4/projects?search=" + enc(keyword) + "&per_page=5&simple=true");
         JsonNode best = null;
         for (JsonNode p : arr) {
@@ -586,7 +620,7 @@ public class GitLabTool implements Tool {
 
     /* ---------- 基础设施 ---------- */
 
-    private JsonNode getJson(String path) throws Exception {
+    JsonNode getJson(String path) throws Exception {
         String body = restClient.get()
                 .uri(baseUrl + path)
                 .header("PRIVATE-TOKEN", currentToken())

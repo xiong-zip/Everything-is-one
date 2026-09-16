@@ -20,6 +20,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.TreeMap;
 import java.util.UUID;
 import java.util.concurrent.Callable;
@@ -50,6 +51,8 @@ public class AgentEngine {
     private static final long CONFIRM_TIMEOUT_MIN = 10;
     /** ReAct 自主循环的步数上限 */
     private static final int MAX_REACT_STEPS = 8;
+    /** 混合模式：计划受阻转入 ReAct 后的额外步数预算（比纯 react 收紧，避免失控） */
+    private static final int MAX_HYBRID_REACT_STEPS = 4;
     /** 同一并行分组内的最大并发数 */
     private static final int MAX_PARALLEL = 3;
 
@@ -95,28 +98,45 @@ public class AgentEngine {
             "你是 AgentFlow 智能体，负责把各子任务的执行结果汇总成最终交付物。" +
             "请按以下格式输出：第一行是一句话总结（30 字以内），空一行后输出完整成品。";
 
+    private static final String EXTRACT_SYSTEM =
+            "你是 AgentFlow 的记忆提取器。从本轮任务中提取值得跨会话长期记住的用户偏好与既定事实" +
+            "（如常用环境/集群、默认连接、署名与称呼、固定习惯、明确的服务↔项目对应关系），" +
+            "不要记录一次性的任务数据或查询结果。输出一个 JSON 对象：" +
+            "{\"add\": [\"新记忆，每条一句话、不超过 80 字\"], \"remove\": [\"被本轮明确否定或已过时的旧记忆原文\"]}\n" +
+            "规则：没有值得记的就输出空数组；remove 必须与现有记忆原文完全一致；add 最多 3 条。只输出 JSON。";
+
     private final ToolRegistry toolRegistry;
     private final LlmClient llmClient;
     private final RunStore runStore;
+    private final MemoryStore memoryStore;
     private final String reportDept;
     private final String agentMode;
+    private final boolean memoryEnabled;
     private final ObjectMapper mapper = new ObjectMapper();
     private final ExecutorService executor = Executors.newCachedThreadPool();
     private final ConcurrentHashMap<String, RunSession> sessions = new ConcurrentHashMap<>();
 
-    public AgentEngine(ToolRegistry toolRegistry, LlmClient llmClient, RunStore runStore,
+    public AgentEngine(ToolRegistry toolRegistry, LlmClient llmClient, RunStore runStore, MemoryStore memoryStore,
                        @Value("${agentflow.report.department:中台研发部}") String reportDept,
-                       @Value("${agentflow.agent.mode:plan}") String agentMode) {
+                       @Value("${agentflow.agent.mode:plan}") String agentMode,
+                       @Value("${agentflow.memory.enabled:true}") boolean memoryEnabled) {
         this.toolRegistry = toolRegistry;
         this.llmClient = llmClient;
         this.runStore = runStore;
+        this.memoryStore = memoryStore;
         this.reportDept = reportDept == null || reportDept.isBlank() ? "中台研发部" : reportDept.trim();
         this.agentMode = agentMode == null ? "plan" : agentMode.trim().toLowerCase();
+        this.memoryEnabled = memoryEnabled;
     }
 
     /** ReAct 自主模式：配置开启且 LLM 可用时生效，失败自动回退线性规划 */
     private boolean reactEnabled() {
         return "react".equals(agentMode) && llmClient.isEnabled();
+    }
+
+    /** 混合模式：先按计划执行，工具步受阻（note 型降级）时放弃剩余计划、转 ReAct 自主决策 */
+    private boolean hybridEnabled() {
+        return "hybrid".equals(agentMode) && llmClient.isEnabled();
     }
 
     /** 提交任务：立即后台执行（不依赖前端订阅），事件全部落库，随时可 attach 查看 */
@@ -329,12 +349,21 @@ public class AgentEngine {
     private void orchestrate(RunSession session) {
         RunRecorder recorder = new RunRecorder(session);
         String command = session.command();
-        String histBlock = historyBlock(session.history());
+        // 长期记忆块与对话历史块一起注入所有 LLM prompt（规划/推理/生成/汇总/ReAct 决策）
+        String histBlock = memoryBlock() + historyBlock(session.history());
         // 提到 try 外：取消收尾时仍可引用已产出的部分结果
         List<PlanStep> steps = null;
         int total = 0;
         Map<String, String> toolResults = new LinkedHashMap<>();
         String writeOutput = null;
+        // 记忆快速通道：显式「记住/忘记」不走规划，直接操作长期记忆并收尾（模拟模式同样可用）
+        if (memoryEnabled) {
+            MemoryCommand mc = parseMemoryCommand(command);
+            if (mc != null) {
+                handleMemoryCommand(recorder, session, mc);
+                return;
+            }
+        }
         try {
             /* 阶段一+二：意图分析与任务规划（LLM 模式一次调用同时完成；confirm 模式推送计划等待放行；ReAct 跳过预规划） */
             recorder.send("phase", map("name", "understand", "state", "active"));
@@ -367,52 +396,39 @@ public class AgentEngine {
                 recorder.send("phase", map("name", "plan", "state", "done"));
             }
 
-            /* 阶段三：逐步执行（同 group 的连续 tool 步并行；ReAct 模式逐轮决策） */
+            /* 阶段三：逐步执行（同 group 的连续 tool 步并行；ReAct 模式逐轮决策；hybrid 计划受阻时转 ReAct） */
             recorder.send("phase", map("name", "execute", "state", "active"));
             if (steps == null) {
-                int stepIdx = 0;
-                boolean wrote = false;
-                while (stepIdx < MAX_REACT_STEPS) {
-                    checkCancelled(session);
-                    ReactDecision d = reactDecide(command, histBlock, toolResults);
-                    if (d == null || "finish".equals(d.action())) {
-                        break;
-                    }
-                    boolean isWrite = "write".equals(d.action()) || d.tool() == null;
-                    String title = d.note() == null || d.note().isBlank()
-                            ? (isWrite ? "生成最终交付内容" : "调用工具取数") : d.note();
-                    PlanStep s = isWrite ? PlanStep.write(title) : PlanStep.tool(title, d.tool());
-                    recorder.send("step", map("index", stepIdx, "total", MAX_REACT_STEPS,
-                            "kind", s.kind(), "tag", s.tag(), "title", s.title()));
-                    String out = executeStep(recorder, session, command, intent, histBlock, s, stepIdx, toolResults, writeOutput);
-                    if (session.isClarifyPaused()) {
-                        break;
-                    }
-                    if (isWrite) {
-                        writeOutput = out;
-                        wrote = true;
-                        break;
-                    }
-                    stepIdx++;
-                }
-                if (!wrote && writeOutput == null && !session.isClarifyPaused()) {
-                    // 决策循环未产出交付物：兜底补一个 write 步
-                    recorder.send("step", map("index", stepIdx, "total", MAX_REACT_STEPS,
-                            "kind", "write", "tag", "内容生成", "title", "汇总生成最终交付内容"));
-                    writeOutput = executeStep(recorder, session, command, intent, histBlock,
-                            PlanStep.write("汇总生成最终交付内容"), stepIdx, toolResults, writeOutput);
-                }
-                total = Math.max(stepIdx + 1, 1);
+                ReactOutcome ro = runReactLoop(recorder, session, command, intent, histBlock,
+                        toolResults, null, 0, MAX_REACT_STEPS, false);
+                writeOutput = ro.writeOutput();
+                total = ro.stepsEmitted();
             } else {
+                // 混合模式下记录失败的工具步序号，用于触发"计划受阻 → 转 ReAct"
+                Set<Integer> failedSteps = ConcurrentHashMap.newKeySet();
                 for (int i = 0; i < steps.size(); ) {
                     checkCancelled(session);
                     int j = parallelEnd(steps, i);
                     if (j - i > 1) {
-                        executeParallel(recorder, session, command, intent, histBlock, steps, i, j, toolResults);
+                        executeParallel(recorder, session, command, intent, histBlock, steps, i, j, toolResults, failedSteps);
                     } else {
-                        writeOutput = executeStep(recorder, session, command, intent, histBlock, steps.get(i), i, toolResults, writeOutput);
+                        writeOutput = executeStep(recorder, session, command, intent, histBlock, steps.get(i), i, toolResults, writeOutput, failedSteps);
                     }
                     if (session.isClarifyPaused()) {
+                        break;
+                    }
+                    // 混合模式：报告类任务格式固定不切换；工具未命中/失败时放弃剩余计划，转 ReAct 自主找路
+                    int batchFrom = i;
+                    int batchTo = j;
+                    if (hybridEnabled() && detectReportKind(command) == null
+                            && failedSteps.stream().anyMatch(k -> k >= batchFrom && k < batchTo)) {
+                        recorder.send("reason", map("index", i, "line",
+                                "计划步骤未命中或失败，剩余计划步骤中止，转入 ReAct 自主决策"));
+                        recorder.send("status", map("text", "计划受阻，切换自主模式继续…", "cls", "is-running"));
+                        ReactOutcome ro = runReactLoop(recorder, session, command, intent, histBlock,
+                                toolResults, writeOutput, j, MAX_HYBRID_REACT_STEPS, true);
+                        writeOutput = ro.writeOutput();
+                        total = j + ro.stepsEmitted();
                         break;
                     }
                     i = j;
@@ -447,6 +463,8 @@ public class AgentEngine {
             recorder.send("status", map("text", "✓ 执行完成", "cls", "is-done"));
             recorder.finish("done", finalOut[0], finalOut[1]);
             completeEmitter(session);
+            // 收尾后异步提取长期记忆（LLM 模式且开启自动提取时），不阻塞本次任务的返回
+            scheduleMemoryExtraction(command, finalOut[1]);
         } catch (CancelledException ex) {
             // 取消也发 done 事件：携带已产出的部分内容与 cancelled 标记，前端出收尾卡
             recorder.send("status", map("text", "已手动停止", "cls", "is-done"));
@@ -624,7 +642,8 @@ public class AgentEngine {
 
     /** 并行执行 [from, to) 的 tool 步：事件按 index 各自推送，结果按顺序合并回主结果表 */
     private void executeParallel(RunRecorder recorder, RunSession session, String command, Intent intent, String histBlock,
-                                 List<PlanStep> steps, int from, int to, Map<String, String> toolResults) {
+                                 List<PlanStep> steps, int from, int to, Map<String, String> toolResults,
+                                 Set<Integer> failedSteps) {
         List<Integer> indexes = new ArrayList<>();
         for (int k = from; k < to; k++) {
             indexes.add(k);
@@ -636,7 +655,7 @@ public class AgentEngine {
             for (Integer k : batch) {
                 jobs.add(() -> {
                     Map<String, String> partial = new LinkedHashMap<>();
-                    executeStep(recorder, session, command, intent, histBlock, steps.get(k), k, partial, null);
+                    executeStep(recorder, session, command, intent, histBlock, steps.get(k), k, partial, null, failedSteps);
                     return partial;
                 });
             }
@@ -663,13 +682,16 @@ public class AgentEngine {
     private record ReactDecision(String action, ToolCall tool, String note) {
     }
 
-    /** 问 LLM 决定下一步动作；失败返回 null（由调用方收敛循环） */
-    private ReactDecision reactDecide(String command, String histBlock, Map<String, String> toolResults) {
+    /** 问 LLM 决定下一步动作；失败返回 null（由调用方收敛循环）。hybridContext 为混合模式转场：说明计划已中断 */
+    private ReactDecision reactDecide(String command, String histBlock, Map<String, String> toolResults, boolean hybridContext) {
         try {
             String system = String.format(REACT_SYSTEM_TEMPLATE, toolRegistry.describeForPrompt());
+            String hybridNote = hybridContext
+                    ? "\n注意：原定计划因工具未命中/失败而中断，请基于已获得的结果自主决定如何完成目标。\n"
+                    : "";
             String content = llmClient.chatJson(system,
                     "任务目标：" + command + "\n已获得的工具结果：\n" + toolSummary(toolResults) + histBlock
-                            + "\n请决定下一步动作。");
+                            + hybridNote + "\n请决定下一步动作。");
             JsonNode node = readJsonObject(content);
             String action = node.path("action").asText("write").toLowerCase();
             if (action.isBlank()) {
@@ -689,6 +711,69 @@ public class AgentEngine {
         }
     }
 
+    /** ReAct 循环产出：write 步内容 + 实际发出的步骤数（供前端 total 与混合模式计数） */
+    private record ReactOutcome(String writeOutput, int stepsEmitted) {
+    }
+
+    /**
+     * ReAct 自主循环（纯 react 模式与混合模式转场共用）：
+     * 逐轮问 LLM 决定 tool/write/finish，步数从 startIdx 起编（混合模式接续计划已完成的步数），
+     * 预算 budget 步；循环结束仍无交付物时兜底补一个 write 步。
+     */
+    private ReactOutcome runReactLoop(RunRecorder recorder, RunSession session, String command, Intent intent,
+                                      String histBlock, Map<String, String> toolResults, String writeOutputIn,
+                                      int startIdx, int budget, boolean hybridContext) {
+        String writeOutput = writeOutputIn;
+        boolean wrote = writeOutput != null;
+        int stepIdx = startIdx;
+        int emitted = 0;
+        while (stepIdx < startIdx + budget) {
+            checkCancelled(session);
+            ReactDecision d = reactDecide(command, histBlock, toolResults, hybridContext);
+            if (d == null || "finish".equals(d.action())) {
+                break;
+            }
+            boolean isWrite = "write".equals(d.action()) || d.tool() == null;
+            String title = d.note() == null || d.note().isBlank()
+                    ? (isWrite ? "生成最终交付内容" : "调用工具取数") : d.note();
+            PlanStep s = isWrite ? PlanStep.write(title) : PlanStep.tool(title, d.tool());
+            recorder.send("step", map("index", stepIdx, "total", startIdx + budget,
+                    "kind", s.kind(), "tag", s.tag(), "title", s.title()));
+            emitted++;
+            String out = executeStep(recorder, session, command, intent, histBlock, s, stepIdx, toolResults, writeOutput, null);
+            if (session.isClarifyPaused()) {
+                break;
+            }
+            if (isWrite) {
+                writeOutput = out;
+                wrote = true;
+                break;
+            }
+            stepIdx++;
+        }
+        if (!wrote && !session.isClarifyPaused()) {
+            // 决策循环未产出交付物：兜底补一个 write 步
+            recorder.send("step", map("index", stepIdx, "total", startIdx + budget,
+                    "kind", "write", "tag", "内容生成", "title", "汇总生成最终交付内容"));
+            emitted++;
+            writeOutput = executeStep(recorder, session, command, intent, histBlock,
+                    PlanStep.write("汇总生成最终交付内容"), stepIdx, toolResults, writeOutput, null);
+        }
+        return new ReactOutcome(writeOutput, Math.max(emitted, 1));
+    }
+
+    /**
+     * 混合模式的「计划受阻」判定：工具返回 note 型降级结果（未命中/未配置/查询失败）。
+     * clarify 候选不算失败——它有独立的暂停-点选重跑流程，优先级更高。
+     */
+    static boolean isStepFailed(ToolResult tr) {
+        return tr != null
+                && tr.clarify() == null
+                && "json".equals(tr.resultType())
+                && tr.result() != null
+                && tr.result().containsKey("note");
+    }
+
     /** 通用启发式拆解：任何指令都能得到合理计划 */
     private List<PlanStep> heuristicPlan(String command) {
         List<PlanStep> steps = new ArrayList<>();
@@ -703,6 +788,29 @@ public class AgentEngine {
                             "since", win.since().toString(), "until", win.until().toString()))));
             steps.add(PlanStep.think("归纳提交记录 · 提炼工作主线"));
             steps.add(PlanStep.write("生成工作" + (weekly ? "周报" : "日报")));
+            return steps;
+        }
+
+        // 0.5 链路分析专线：trace 分析 + 变更关联（GitLab 可用时自动衔接）→ 归纳 → 成稿
+        String traceId = extractTraceId(command);
+        if (traceId != null || command.contains("链路")) {
+            Map<String, Object> traceArgs = traceId == null ? Map.of() : Map.of("traceId", traceId);
+            steps.add(PlanStep.tool("分析 SigNoz 链路", new ToolCall("signoz.trace", traceArgs)));
+            if (gitlabConfigured()) {
+                steps.add(PlanStep.tool("关联故障前的代码变更（谁改坏的）", new ToolCall("gitlab.changes", traceArgs)));
+            }
+            steps.add(PlanStep.think("结合链路根因与嫌疑变更，梳理因果链"));
+            steps.add(PlanStep.write("输出链路分析结论与变更关联报告"));
+            return steps;
+        }
+
+        // 0.8 知识库专线：提到知识库/资料/文档且库非空 → 检索 → 归纳 → 成稿
+        if (kbNonEmpty() && (command.contains("知识库") || command.contains("资料") || command.contains("文档")
+                || command.contains("规范手册") || command.contains("操作手册"))) {
+            steps.add(PlanStep.tool("检索个人知识库", new ToolCall("kb.query",
+                    Map.of("mode", "search", "query", command))));
+            steps.add(PlanStep.think("归纳知识库命中内容 · 关联问题"));
+            steps.add(PlanStep.write("基于知识库内容作答（注明来源文件）"));
             return steps;
         }
 
@@ -721,8 +829,7 @@ public class AgentEngine {
     }
 
     /** 识别 GitLab 工作报告意图：与提交/代码相关且提到日报或周报；返回 daily/weekly/null */
-    private String detectReportKind(String command) {
-        String lower = command.toLowerCase();
+    private String detectReportKind(String command) {        String lower = command.toLowerCase();
         boolean gitRelated = lower.contains("gitlab") || lower.contains("commit")
                 || command.contains("提交") || command.contains("代码");
         if (!gitRelated) {
@@ -738,12 +845,32 @@ public class AgentEngine {
         return null;
     }
 
+    /** 指令里的 32 位十六进制即 trace ID；没有返回 null */
+    private static String extractTraceId(String command) {
+        if (command == null) {
+            return null;
+        }
+        java.util.regex.Matcher m = java.util.regex.Pattern
+                .compile("\\b([0-9a-fA-F]{32})\\b").matcher(command);
+        return m.find() ? m.group(1).toLowerCase() : null;
+    }
+
+    /** GitLab 是否已配置（决定链路分析后能否自动衔接变更关联） */
+    private boolean gitlabConfigured() {
+        return toolRegistry.get("gitlab.query") instanceof GitLabTool g && g.isConfigured();
+    }
+
+    /** 知识库是否非空（决定知识库类提问能否直接加检索步） */
+    private boolean kbNonEmpty() {
+        return toolRegistry.get("kb.query") instanceof com.agentflow.kb.KbSearchTool kb && !kb.isEmpty();
+    }
+
     /* ================= 步骤执行 ================= */
 
-    /** 返回 write 步生成的内容（供汇总复用） */
+    /** 返回 write 步生成的内容（供汇总复用）；failedSteps 非空时记录 note 型失败步的序号（混合模式切换用） */
     private String executeStep(RunRecorder recorder, RunSession session, String command, Intent intent, String histBlock,
                                PlanStep s, int index, Map<String, String> toolResults,
-                               String writeOutput) {
+                               String writeOutput, Set<Integer> failedSteps) {
         checkCancelled(session);
         recorder.send("step-state", map("index", index, "state", "running"));
         recorder.send("status", map("text", "正在执行 · " + s.title(), "cls", "is-running"));
@@ -759,6 +886,9 @@ public class AgentEngine {
             }
             if (tr == null) {
                 tr = ToolResult.note("工具 " + s.tool().name() + " 不可用");
+            }
+            if (failedSteps != null && isStepFailed(tr)) {
+                failedSteps.add(index);
             }
             // 摘要 + 具体数据一并交给后续 LLM 推理/汇总，避免模型只凭一句话编造细节（周报素材较长，放宽截断）
             String detail = tr.list() == null || tr.list().isEmpty()
@@ -1182,6 +1312,113 @@ public class AgentEngine {
                     .append("\n    产出：").append(truncate(h.get("output"), 500)).append("\n");
         }
         return sb.toString();
+    }
+
+    /* ================= 长期记忆 ================= */
+
+    /** 记忆块注入所有 LLM prompt（与对话历史块拼接）；无记忆或总开关关闭返回空串 */
+    private String memoryBlock() {
+        if (!memoryEnabled) {
+            return "";
+        }
+        List<MemoryStore.MemoryItem> items = memoryStore.list();
+        if (items.isEmpty()) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder("\n长期记忆（用户偏好与既定事实，规划参数与内容生成时遵循；与当前指令冲突时以当前指令为准）：\n");
+        int n = 0;
+        for (MemoryStore.MemoryItem it : items) {
+            sb.append("- ").append(truncate(it.content(), 120)).append("\n");
+            if (++n >= 20) {
+                break;
+            }
+        }
+        return sb.toString();
+    }
+
+    /** 显式记忆指令：kind = remember | forget */
+    record MemoryCommand(String kind, String content) {
+    }
+
+    /** 识别「记住 XXX」「忘记/删除记忆 XXX」指令；普通指令返回 null（不匹配则正常走任务流程） */
+    static MemoryCommand parseMemoryCommand(String command) {
+        if (command == null) {
+            return null;
+        }
+        String c = command.trim();
+        java.util.regex.Matcher m = java.util.regex.Pattern
+                .compile("^记住[:：,，\\s]*(.{1,200})$").matcher(c);
+        if (m.matches() && !m.group(1).isBlank()) {
+            return new MemoryCommand("remember", m.group(1).trim());
+        }
+        m = java.util.regex.Pattern.compile("^(?:忘记|忘掉|删除记忆)[:：\\s]*(.{1,200})$").matcher(c);
+        if (m.matches() && !m.group(1).isBlank()) {
+            return new MemoryCommand("forget", m.group(1).trim());
+        }
+        return null;
+    }
+
+    /** 记忆快速通道：不走规划不花 LLM，直接增删记忆并以 done 收尾 */
+    private void handleMemoryCommand(RunRecorder recorder, RunSession session, MemoryCommand mc) {
+        String summary;
+        if ("remember".equals(mc.kind())) {
+            boolean saved = memoryStore.add(mc.content());
+            summary = saved ? "已记住：" + mc.content() : "这条已经在记忆里了：" + mc.content();
+        } else {
+            List<MemoryStore.MemoryItem> hits = memoryStore.findBySubstring(mc.content());
+            if (hits.isEmpty()) {
+                summary = "没有找到包含「" + mc.content() + "」的记忆";
+            } else {
+                for (MemoryStore.MemoryItem h : hits) {
+                    memoryStore.delete(h.id());
+                }
+                summary = "已忘记 " + hits.size() + " 条：" + hits.stream()
+                        .map(MemoryStore.MemoryItem::content).reduce((a, b) -> a + "；" + b).orElse("");
+            }
+        }
+        recorder.send("status", map("text", summary, "cls", "is-done"));
+        recorder.send("done", map("summary", summary, "output", "", "meta", List.of("长期记忆")));
+        recorder.finish("done", summary, "");
+        completeEmitter(session);
+    }
+
+    /** 任务成功收尾后异步提取记忆：LLM 模式 + 自动提取开关 + 有产出才触发；失败静默 */
+    private void scheduleMemoryExtraction(String command, String output) {
+        if (!memoryEnabled || !llmClient.isEnabled() || !memoryStore.isAutoExtract()) {
+            return;
+        }
+        if (output == null || output.isBlank() || parseMemoryCommand(command) != null) {
+            return;
+        }
+        executor.submit(() -> {
+            try {
+                extractMemories(command, output);
+            } catch (Exception ex) {
+                log.debug("记忆自动提取失败: {}", ex.getMessage());
+            }
+        });
+    }
+
+    private void extractMemories(String command, String output) {
+        List<String> existing = memoryStore.list().stream().map(MemoryStore.MemoryItem::content).toList();
+        String user = "用户指令：" + truncate(command, 200)
+                + "\n执行产出（节选）：\n" + truncate(output, 1200)
+                + "\n现有记忆：\n" + (existing.isEmpty() ? "（空）" : String.join("\n", existing))
+                + "\n请输出 JSON。";
+        String content = llmClient.chatJson(EXTRACT_SYSTEM, user);
+        JsonNode node = readJsonObject(content);
+        node.path("add").forEach(a -> {
+            String v = a.asText("").trim();
+            if (!v.isEmpty()) {
+                memoryStore.add(v);
+            }
+        });
+        node.path("remove").forEach(r -> {
+            String v = r.asText("").trim();
+            if (!v.isEmpty()) {
+                memoryStore.deleteByContent(v);
+            }
+        });
     }
 
     /* ================= 工具方法 ================= */

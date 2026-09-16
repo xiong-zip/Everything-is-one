@@ -28,3 +28,6 @@ Thumbs.db
 
 # 任务历史数据库（SQLite，运行时自动创建）
 data/
+
+# 单测经 StoragePaths 锚定项目根时产生的临时文件
+/target/

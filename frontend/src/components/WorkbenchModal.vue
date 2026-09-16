@@ -23,8 +23,10 @@
         <TraceAnalysisPane v-if="active === 'trace'" @run="$emit('run', $event)" />
         <SettingsPane v-else-if="active === 'general'" />
         <DbDrawer v-else-if="active === 'db'" embedded @active-changed="$emit('db-active-changed', $event)" />
-        <GitlabDrawer v-else-if="active === 'gitlab'" embedded />
-        <StatsDrawer v-else-if="active === 'stats'" embedded />
+        <GitlabPane v-else-if="active === 'gitlab'" />
+        <ServiceMapPane v-else-if="active === 'svcs'" />
+        <KbPane v-else-if="active === 'kb'" @run="$emit('run', $event)" />
+        <MemoryPane v-else-if="active === 'memory'" />
         <ScheduleDrawer v-else-if="active === 'morning'" embedded />
         <ToolsDrawer v-else-if="active === 'tools'" embedded />
         <LlmPane v-else-if="active === 'llm'" embedded />
@@ -38,8 +40,10 @@ import { onBeforeUnmount, onMounted, ref } from 'vue'
 import TraceAnalysisPane from './TraceAnalysisPane.vue'
 import SettingsPane from './SettingsPane.vue'
 import DbDrawer from './DbDrawer.vue'
-import GitlabDrawer from './GitlabDrawer.vue'
-import StatsDrawer from './StatsDrawer.vue'
+import GitlabPane from './GitlabPane.vue'
+import ServiceMapPane from './ServiceMapPane.vue'
+import KbPane from './KbPane.vue'
+import MemoryPane from './MemoryPane.vue'
 import ScheduleDrawer from './ScheduleDrawer.vue'
 import ToolsDrawer from './ToolsDrawer.vue'
 import LlmPane from './LlmPane.vue'
@@ -54,8 +58,10 @@ const tabs = [
   { key: 'trace', icon: '🔗', label: '链路分析' },
   { key: 'general', icon: '✦', label: '通用设置' },
   { key: 'db', icon: '🗄', label: '数据库连接' },
-  { key: 'gitlab', icon: '🦊', label: 'GitLab 账户' },
-  { key: 'stats', icon: '▦', label: '效能热力图' },
+  { key: 'gitlab', icon: '🦊', label: 'GitLab 效能' },
+  { key: 'svcs', icon: '⇄', label: '服务映射' },
+  { key: 'memory', icon: '🧠', label: '记忆' },
+  { key: 'kb', icon: '📚', label: '知识库' },
   { key: 'morning', icon: '⏰', label: '晨报机器人' },
   { key: 'tools', icon: '⚙', label: '工具管理' },
   { key: 'llm', icon: '🤖', label: '模型接入' },

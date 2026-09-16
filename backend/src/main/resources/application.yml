@@ -4,9 +4,15 @@ server:
 spring:
   application:
     name: agentflow
+  servlet:
+    multipart:
+      # 个人知识库上传：单文件/整请求上限
+      max-file-size: ${AGENTFLOW_KB_MAX_FILE_MB:20MB}
+      max-request-size: 30MB
 
 agentflow:
-  # 执行模式：plan=先整体规划再顺序/并行执行（默认）；react=ReAct 自主循环，逐轮决策下一步动作
+  # 执行模式：plan=先整体规划再顺序/并行执行（默认）；react=ReAct 自主循环，逐轮决策下一步动作；
+  # hybrid=混合模式，先按计划执行，工具步未命中/失败时放弃剩余计划、转 ReAct 自主找路（需 LLM）
   agent:
     mode: ${AGENTFLOW_AGENT_MODE:plan}
   llm:
@@ -55,6 +61,26 @@ agentflow:
     password: ${KUBOARD_PASSWORD:}
     # 默认操作的集群名（Kuboard 中导入时的集群名，完整列表用 k8s.query action=clusters 查询）
     cluster: ${KUBOARD_CLUSTER:dev}
+  correlate:
+    # 变更关联（内置 gitlab.changes 工具）：默认回溯故障前 N 小时的提交（上限 168）
+    window-hours: ${AGENTFLOW_CORRELATE_WINDOW_HOURS:48}
+    # 单次关联的项目数上限（服务去重后）
+    max-projects: 5
+    # 展示的嫌疑变更条数上限
+    max-commits: 10
+  memory:
+    # 长期记忆总开关：关闭后不注入 prompt、不做自动提取，「记住/忘记」指令也会提示未启用
+    enabled: ${AGENTFLOW_MEMORY:true}
+  kb:
+    # 个人知识库：上传文件的落盘目录（相对路径自动锚定项目根）
+    files-path: ${AGENTFLOW_KB_FILES:./data/kb-files}
+    # 文件数上限（超出拒绝上传，防误传整个目录）
+    max-files: ${AGENTFLOW_KB_MAX_FILES:200}
+    # 分块目标字符数与相邻块重叠字符（检索粒度）
+    chunk-chars: ${AGENTFLOW_KB_CHUNK_CHARS:600}
+    chunk-overlap: ${AGENTFLOW_KB_CHUNK_OVERLAP:80}
+    # 检索返回的命中分块数
+    top-k: ${AGENTFLOW_KB_TOP_K:5}
   schedule:
     morning-report:
       # 自动晨报机器人：定时生成昨日日报并推送（需配置 GITLAB_TOKEN；推送需配置 Webhook）

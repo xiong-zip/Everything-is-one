@@ -52,7 +52,9 @@ public class SigNozTraceTool implements Tool {
                 .append("输出根因、失败传播链、耗时与状态矛盾（如 HTTP 200 但业务失败）。")
                 .append("用户发来的一串 32 位十六进制字符（如 c4ea16342cf1a0526d22fa20d57c9e2a）就是 trace ID，")
                 .append("应当直接用本工具分析，不要当成无意义哈希串、也不要要求用户补充说明。")
-                .append("分析前会自动比对故障案例知识库，命中已知模式会给出历史根因与处置方案。只读，不修改任何数据。");
+                .append("分析前会自动比对故障案例知识库，命中已知模式会给出历史根因与处置方案。")
+                .append("分析完成后（尤其失败链路）应紧接着用 gitlab.changes 传同一个 traceId 关联故障前的代码变更，")
+                .append("回答「谁改坏的」。只读，不修改任何数据。");
         int cases = kb.entries().size();
         sb.append(cases == 0 ? "（知识库当前为空，属正常冷启动）" : "（知识库已有 " + cases + " 条案例）");
         return sb.toString();
@@ -101,6 +103,10 @@ public class SigNozTraceTool implements Tool {
         result.put("logCount", fetched.logs().size());
         result.put("fingerprint", TraceDigest.renderFingerprint(fp));
         result.put("kbMatch", match.strength().name() + (match.entry() == null ? "" : ":" + match.entry().id()));
+        // services / traceTime 供后续步骤（如 gitlab.changes 变更关联）直接取用，不必再查一次
+        result.put("services", IncidentKb.servicesOf(fetched.spans()));
+        String firstSeen = IncidentKb.timeInfo(fetched.spans()).firstSeen();
+        result.put("traceTime", firstSeen.length() >= 16 ? firstSeen.substring(0, 16).replace('T', ' ') : firstSeen);
         TraceSpan root = TraceDigest.mainRoot(fetched.spans());
         if (root != null) {
             result.put("totalMs", TraceDigest.fmt(root.durationMs()));

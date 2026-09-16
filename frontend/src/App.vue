@@ -66,7 +66,7 @@
         v-if="workbenchOpen"
         :tab="workbenchTab"
         @close="workbenchOpen = false"
-        @run="analyzeFromRecord"
+        @run="onWorkbenchRun"
         @db-active-changed="dbActive = $event"
       />
 
@@ -179,6 +179,16 @@ function openWorkbench() {
 function analyzeFromRecord(traceId) {
   workbenchOpen.value = false
   prefill.value = { command: `分析链路 ${traceId}`, nonce: Date.now() }
+}
+
+/* 工作台面板请求预填指令：32 位十六进制仍是链路 ID（链路面板旧约定），其余按完整指令处理 */
+function onWorkbenchRun(payload) {
+  const text = String(payload || '')
+  workbenchOpen.value = false
+  prefill.value = {
+    command: /^[0-9a-f]{32}$/i.test(text) ? `分析链路 ${text}` : text,
+    nonce: Date.now(),
+  }
 }
 
 async function loadDbMeta() {

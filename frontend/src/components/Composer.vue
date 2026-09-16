@@ -12,6 +12,23 @@
           @keydown="onKeydown"
           @input="autoResize"
         ></textarea>
+        <input
+          ref="fileEl"
+          class="sr-only"
+          type="file"
+          accept=".md,.txt,.csv,.json,.log,.html,.htm,.pdf,.docx,.xlsx"
+          multiple
+          @change="onFilesPicked"
+        />
+        <button
+          class="btn btn-ghost attach-btn"
+          :class="{ uploading }"
+          type="button"
+          :title="uploading ? '正在上传…' : '上传文档到个人知识库（md/txt/csv/json/log/html/pdf/docx/xlsx）'"
+          aria-label="上传文档到知识库"
+          :disabled="uploading"
+          @click="fileEl && fileEl.click()"
+        >{{ uploading ? '⏳' : '📎' }}</button>
         <button
           class="btn btn-primary send-btn"
           :class="{ running: busy }"
@@ -67,6 +84,7 @@
 
 <script setup>
 import { nextTick, ref, watch } from 'vue'
+import { showToast } from '../composables/useToast'
 
 const props = defineProps({
   busy: { type: Boolean, default: false },
@@ -77,7 +95,7 @@ const props = defineProps({
   dbActive: { type: String, default: '' },
 })
 
-const emit = defineEmits(['send', 'stop', 'toggle-confirm', 'db-active'])
+const emit = defineEmits(['send', 'stop', 'toggle-confirm', 'db-active', 'kb-uploaded'])
 
 function typeName(t) {
   return { dameng: '达梦', mysql: 'MySQL', postgresql: 'PostgreSQL', oracle: 'Oracle' }[t] || t
@@ -85,6 +103,32 @@ function typeName(t) {
 
 const command = ref('')
 const inputEl = ref(null)
+const fileEl = ref(null)
+const uploading = ref(false)
+
+/* 📎 上传到个人知识库：逐个上传，toast 汇报每个结果；完成后通知父组件刷新 */
+async function onFilesPicked(e) {
+  const files = [...(e.target.files || [])]
+  e.target.value = '' // 允许重复选同一文件
+  if (!files.length) return
+  uploading.value = true
+  let okCount = 0
+  for (const f of files) {
+    try {
+      const fd = new FormData()
+      fd.append('file', f)
+      const res = await fetch('/api/kb/files', { method: 'POST', body: fd })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || '上传失败')
+      okCount++
+      showToast(`已入库 ${data.filename} · ${data.charCount} 字 / ${data.chunkCount} 块${data.replaced ? '（替换旧版本）' : ''}`)
+    } catch (err) {
+      showToast(`${f.name}：${err.message || '上传失败'}`, 'err')
+    }
+  }
+  uploading.value = false
+  if (okCount > 0) emit('kb-uploaded')
+}
 
 function send() {
   const text = command.value.trim()
