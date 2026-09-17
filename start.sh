@@ -26,7 +26,7 @@ if [ -z "${DEEPSEEK_API_KEY:-}" ]; then
 fi
 
 echo "[信息] 正在启动，首次运行会自动下载 Maven、Node.js 与依赖，请耐心等待..."
-echo "[信息] 启动完成后请访问 http://localhost:8080"
+echo "[信息] 启动完成后请访问 http://localhost:8888"
 echo
 
 cd backend

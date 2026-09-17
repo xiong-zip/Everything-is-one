@@ -106,7 +106,8 @@ AgentFlow 是一个**单机部署、面向个人/小团队的 AI 运维工作台
 | `service_project_map` | ServiceProjectStore | 服务名→GitLab 项目映射（变更关联用） |
 | `agent_memory(_meta)` | MemoryStore | 长期记忆 + 自动提取开关 |
 | `trace_analysis` | TraceAnalysisStore | 链路分析记录（按 trace_id 去重累加次数） |
-| `schedule_runs` | ScheduleStore | 晨报执行历史 |
+| `schedule_tasks` / `schedule_runs(_meta)` | ScheduleStore | 定时任务（一条指令一个任务，各自开关）+ 执行记录（带 command 列，按任务归类）+ 总开关与推送形态 |
+| `notify_channels(_meta)` | NotifyChannelStore | 推送通道（多通道，含脱敏前的完整 Webhook）+ 多选集合 |
 | 动态工具 | ToolStore | OpenAPI 导入的工具定义 |
 
 所有 Store 共用 `agentflow.storage.path`，路径经 `StoragePaths.resolve()` 锚定项目根（向上找 `.env`/`.git`，解决 IDE 工作目录不一致问题）。各自 `@PostConstruct` 建表——没有统一 migration，因为单机 SQLite 演进成本可控。
@@ -290,9 +291,19 @@ public interface Tool {
 - **自动提取**：`scheduleMemoryExtraction()` 在 run 成功收尾后 `executor.submit` 异步——`EXTRACT_SYSTEM` prompt（输入本轮指令+产出+现有记忆；输出 `{add[], remove[]}`，每条 ≤80 字最多 3 条，remove 仅限明确否定）→ `chatJson` 解析应用。开关存 meta 表，面板可关；
 - **总开关** `agentflow.memory.enabled`：关则不注入不提取，显式指令也拦截。
 
-### 5.7 晨报机器人与通知
+### 5.7 定时任务与通知
 
-**类**：`ScheduleService`、`ScheduleStore`、`NotifyService`。Spring `@Scheduled`（cron 来自配置，本地时区）→ 复用 `engine.executeHeadless()` 无界面跑默认指令（「生成昨天的工作日报」）→ 产物推 `AGENTFLOW_NOTIFY_WEBHOOK`（企微/钉钉）→ 执行历史落 `schedule_runs`。注意 headless 与正常 start 走同一条 orchestrate 管线——**没有为定时任务开小灶**，这保证了行为一致性。
+**类**：`ScheduleService`、`ScheduleStore`、`NotifyService`、`NotifyChannelStore`。Spring `@Scheduled`（cron 在 .env，全局一个）→ 总开关开着就遍历所有<b>已启用</b>的任务 → 每个任务复用 `engine.executeHeadless()` 无界面跑它的指令 → 产物按推送形态发给所有勾选的通道 → 执行记录落 `schedule_runs`。headless 与正常 start 走同一条 orchestrate 管线——**没有为定时任务开小灶**，这保证了行为一致性。
+
+**任务模型**：一个任务 = 一条指令（`schedule_tasks.command` 唯一），执行记录表加了 `command` 列作为**归类键**，所以界面上的「最近执行」是分组在每个任务下的，每个分类能单独开关、单独删除。生效条件是<b>总开关 && 该任务开关</b>：总开关沿用老的单任务时代语义作全局闸门，任务开关让你能停掉某一条而不删掉它。删除任务默认连它的执行记录一起删；改指令时会把记录的 `command` 一起迁移，否则老记录会变成没人认领的孤儿。
+
+**两个容易搞错的地方**：一，`schedule_runs.task_id` 存的是 **AgentEngine 的任务 UUID**，不是 `schedule_tasks` 的主键 ID，所以按任务删记录只能靠 `command`，不能用 `task_id` 关联（写错过一次）。二，`ScheduleStore.init()` 里有一段幂等加列（查 `PRAGMA table_info` 缺了才 `ALTER`）和 `ScheduleService.@PostConstruct` 的迁移：老库升级前只有一条全局指令、记录里没有 `command`，首次启动会用它建出第一个任务并**回填**历史记录——那时确实只跑这一条，回填是准确的，不回填这些记录就成了无归属的孤儿。
+
+**推送**：`NotifyChannelStore`（`notify_channels` 表）存多条通道，「选中哪些」作为**集合**存在 meta 的 `selected` 键里（JSON 数组），与通道本体分开——改 URL 不影响勾选状态，删通道/改名能精确地把选中项一起摘掉或跟随。`NotifyService` 遍历生效通道逐个推送，**任一通道成功即算推送成功**（多通道下「部分成功」不该记成失败）。生效目标是「界面配了 → 用勾选的；界面一条都没配 → 回退 .env」，注意**界面配了但一个都没勾选时不回退 .env**，否则「取消勾选」这个动作会失效。@ 人的字段位置两种机器人不同（企微在 `text.mentioned_mobile_list`，钉钉在顶层 `at`），放错不会报错、只会安静地不 @ 到人，所以两种类型都有单测。
+
+**推送形态**由 `NotifyMode`（text/markdown/file）表达，存在 `schedule_meta` 的 `notify_mode`，面板下拉即改即生效。三档对应群机器人的三种能力上限：text 2048 字节（静默截断）、markdown 4096、file 走附件不受正文限制。两条刻意的约束：**告警强制 text**——@ 值班人只有文本消息支持得可靠，而告警卡片本来就该短；**file 模式发两条**——先发摘要文本再发附件，因为 file 消息本身带不了文字说明。附件走 `webhook/upload_media` 拿 `media_id` 再发（3 天有效，现传现发不缓存），上传地址由 send 地址推导。
+
+两处踩过的坑记在代码注释里：一，**别用 `MultipartBodyBuilder`**——它在 spring-web 里但会引用 `reactivestreams.Publisher`，本项目只有 spring-web，类加载直接 `NoClassDefFoundError`；改用 `MultiValueMap<String,Object>` + `ByteArrayResource`（覆写 `getFilename()`）。二，`NotifyService.push()` 的每通道循环**捕获 `Throwable` 而非 `Exception`**——上面那个 `NoClassDefFoundError` 是 `Error`，逃出去后把整个任务打成 500、执行记录都没落库。推送是任务的收尾动作，这里是「通知边界」，绝不能让推送反过来打挂任务。
 
 ### 5.8 效能热力图
 

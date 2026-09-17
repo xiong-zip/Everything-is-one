@@ -36,8 +36,11 @@ agentflow:
     # GitLab 工作报告抬头中的部门名
     department: ${AGENTFLOW_DEPT:中台研发部}
   notify:
-    # 通用 Webhook（企微/钉钉机器人），晨报生成后推送；留空则只落库不推送
+    # 通用 Webhook（企微/钉钉机器人），晨报/告警生成后推送；留空则只落库不推送
     webhook: ${AGENTFLOW_NOTIFY_WEBHOOK:}
+    # 告警推送要 @ 的值班人：企微手机号，逗号分隔；填 @all 表示 @所有人
+    # （只作用于告警，晨报等例行推送不 @ 人）
+    mention: ${AGENTFLOW_NOTIFY_MENTION:}
   db:
     # 内置 db-architect 数据库透视：Python 解释器命令与脚本目录
     python-cmd: ${AGENTFLOW_DB_PYTHON:python}

@@ -23,10 +23,12 @@
 | **SigNoz 链路分析 + 故障案例知识库** | 给一个 trace ID 自动查 span 树与 ERROR/WARN 日志，输出根因、失败传播链、耗时与状态矛盾（如 HTTP 200 但业务失败）；默认 24h 查不到自动扩到 7d；分析前自动比对 `docs/incidents/` 知识库，命中已知故障直接复用历史处置；可将结论归档为案例（同一故障模式累加次数，不重复建档，归档需人工放行） |
 | **变更关联（谁改坏的）** | 内置 `gitlab.changes` 工具：链路分析后自动衔接，拉取涉及服务对应 GitLab 项目在故障前 N 小时（默认 48，可调）的提交，按可疑度排序——时间接近、修复/回滚类提交、失败点服务、流水线失败加权，**每条附理由，规则透明**；服务名↔GitLab 项目映射在工作台「服务映射」面板管理，未配置的服务按名称搜索自动推断，歧义时候选卡反问、选中即固化（越用越准）；也可独立使用（「查 pay-service 最近谁改的」） |
 | **K8s 运维排查（只读）** | 内置 `k8s.query` 工具，经 **Kuboard** 面板的 `/k8s-api` 代理访问集群：Pod/Deployment/Service/Job 列表与异常状态（CrashLoop/Pending/未就绪自动标 ⚠）、Pod 日志（含崩溃前的 previous 日志、关键词过滤、按服务名跨命名空间反查实例）、命名空间 Warning 事件、节点状态；**关键字未命中时自动停止后续步骤**，按名称相似度（子串/编辑距离）给出相近候选卡片反问用户，点选即重跑；与链路分析联动可实现「trace 定位服务 → 看 Pod 状态/日志/事件」一条龙排查 |
-| **工作台（窗口弹窗）** | 入口在左下角输入区，打开为居中窗口：**左侧菜单 + 右侧内容**，含链路分析记录、数据库连接、GitLab 账户、服务映射、记忆、知识库、效能热力图、晨报机器人、工具管理；支持 Esc / 点遮罩 / 关闭按钮退出 |
+| **工作台（窗口弹窗）** | 入口在左下角输入区，打开为居中窗口：**左侧菜单 + 右侧内容**，含链路分析记录、数据库连接、GitLab 账户、服务映射、记忆、知识库、效能热力图、定时任务（内含推送通道管理）、工具管理；支持 Esc / 点遮罩 / 关闭按钮退出 |
 | **链路分析记录** | 每次链路分析自动落库（按 trace ID 去重，重复分析累加次数）：失败点、指纹、涉及服务、耗时、环境、命中的案例、分析摘要全文；可按 trace ID / 失败点 / 指纹 / 服务 / 案例号检索，并统计失败数与高频故障指纹 |
 | **GitLab 效能日报/周报** | 拉取时间窗内逐条提交，LLM 归纳成固定格式报告，支持「今天/昨天/本周」 |
-| **自动晨报机器人** | 定时（默认工作日 9 点）生成昨日日报并推送到企微/钉钉 Webhook，全程无人值守 |
+| **定时任务（多任务）** | 工作台 → 定时任务 面板管理任意多条指令，到点（默认工作日 9 点）**依次执行所有已启用的任务**并推送到勾选的通道；**每个任务可单独开关**（停掉某条而不删掉它），可编辑指令、可删除（连同它的执行记录）；执行记录**按指令归类**在每个任务下，展开即可看历史、也能删单条 |
+| **推送通道（多通道多选）** | 工作台 → 晨报机器人 → 点「推送通道」弹出管理窗：可添加任意多个企微/钉钉群机器人，**勾选哪些就推给哪些（可多选）**，晨报与告警同时发往所有勾选通道；地址含密钥，列表只回显脱敏值（留末 4 位），支持单通道「测试」实发一条验证；一条都没配时自动回退 `.env` 的 `AGENTFLOW_NOTIFY_WEBHOOK` |
+| **推送方式（三档）** | 面板下拉切换，即改即生效：**纯文本**（上限 2048 字节，超出被企微静默截断；告警固定用这档，@ 值班人只有文本可靠）／**Markdown 长文**（上限 4096 字节，可读性更好）／**摘要 + 文件附件**（群里发几条摘要 + 完整 `.md` 附件，绕开字节上限，实测企微附件上限 20MB）。钉钉自定义机器人发不了文件，该档会自动降级为 Markdown |
 | **效能热力图** | 半年 GitLab 提交分布一图可见：总提交、活跃天、最长连续（数据缓存 10 分钟） |
 | **历史回放 + 搜索** | 每个任务的完整事件流落 SQLite，可搜索指令/摘要、分页加载、随时原样回放；超期历史自动清理 |
 | **报告导出** | 结果一键下载 .txt / .md，或打印为 PDF |
@@ -75,8 +77,8 @@ Everything-is-one/
         │   ├── config/                    # WebConfig(CORS) / GlobalExceptionHandler(400)
         │   ├── controller/                # AgentController / ToolsController / ScheduleController
         │   ├── engine/                    # AgentEngine(编排) / RunSession(会话) / RunStore(SQLite)
-        │   ├── schedule/                  # 晨报机器人（ScheduleService / ScheduleStore）
-        │   ├── notify/                    # Webhook 推送（NotifyService）
+        │   ├── schedule/                  # 定时任务（ScheduleService 调度 / ScheduleStore 任务与执行记录）
+        │   ├── notify/                    # 推送通道（NotifyService 多通道分发 / NotifyChannelStore 多选配置）
         │   ├── llm/LlmClient.java         # DeepSeek 客户端（JSON mode + 流式）
         │   ├── model/                     # PlanStep / ToolCall / RunRequest / PlanConfirmRequest
         │   ├── signoz/                    # SigNoz 链路分析（MCP 客户端 / 摘要 / 故障案例知识库）
@@ -131,10 +133,11 @@ start.bat
 | `AGENTFLOW_KB_MAX_FILE_MB` | 否 | 知识库单文件上传上限（默认 `20` MB） |
 | `AGENTFLOW_KB_MAX_FILES` | 否 | 知识库文件数上限（默认 `200`） |
 | `AGENTFLOW_KB_CHUNK_CHARS` / `AGENTFLOW_KB_CHUNK_OVERLAP` / `AGENTFLOW_KB_TOP_K` | 否 | 知识库分块大小 / 相邻块重叠 / 检索返回命中数（默认 `600` / `80` / `5`） |
-| `AGENTFLOW_NOTIFY_WEBHOOK` | 否 | 企微/钉钉机器人 Webhook，晨报生成后推送 |
-| `AGENTFLOW_MORNING_REPORT` | 否 | 自动晨报开关（默认 `false`） |
-| `AGENTFLOW_MORNING_CRON` | 否 | 晨报 cron（默认 `0 0 9 * * MON-FRI`，本地时区） |
-| `AGENTFLOW_MORNING_COMMAND` | 否 | 晨报指令（默认「根据我的 GitLab 提交记录生成昨天的工作日报」） |
+| `AGENTFLOW_NOTIFY_WEBHOOK` | 否 | 企微/钉钉**群机器人** Webhook（群聊 → 群机器人 → 添加 → 复制地址）。**仅在界面没配过推送通道时作为兜底**；界面配了就以界面为准 |
+| `AGENTFLOW_NOTIFY_MENTION` | 否 | 告警推送要 @ 的值班人（企微手机号，逗号分隔；`@all` 表示所有人）。只作用于告警，晨报不 @ 人 |
+| `AGENTFLOW_MORNING_REPORT` | 否 | **总开关**初始值（默认 `false`）。工作台 → 定时任务 面板可随时切换，界面切过之后以界面为准 |
+| `AGENTFLOW_MORNING_CRON` | 否 | 任务执行时间（默认 `0 0 9 * * MON-FRI`，本地时区）。**全局统一、且只能在 .env 改**，改后需重启；到点后所有启用的任务依次执行 |
+| `AGENTFLOW_MORNING_COMMAND` | 否 | 首个任务的**初始**指令（默认「根据我的 GitLab 提交记录生成昨天的工作日报」）。只在首次启动、任务表为空时用来建第一个任务，之后任务以面板为准 |
 | `AGENTFLOW_DB` | 否 | SQLite 数据库路径（默认 `./data/agentflow.db`，相对路径自动锚定到项目根） |
 | `AGENTFLOW_RETENTION_DAYS` | 否 | 历史保留天数，超期记录启动时清理（默认 30，0 = 不清理） |
 | `AGENTFLOW_MAX_RUNS` | 否 | 历史条数上限（默认 1000，0 = 不限制） |
@@ -192,8 +195,17 @@ java -jar target/agentflow-backend-0.0.1-SNAPSHOT.jar   # 运行 jar
 | GET | `/api/tools` | 已注册工具列表（含动态工具、写操作标记） |
 | POST | `/api/tools/openapi` | 从 OpenAPI/Swagger 文档导入工具（body: `{"url": "..."}`） |
 | DELETE | `/api/tools/{name}` | 删除动态工具（内置工具不可删） |
-| GET | `/api/schedule/status` | 晨报机器人配置与最近执行 |
-| POST | `/api/schedule/run-now` | 立即试跑晨报（同步返回，约 1 分钟） |
+| GET | `/api/schedule/status` | 定时任务状态（总开关、执行时间、推送方式、任务列表及各任务归类的执行记录） |
+| POST | `/api/schedule/enabled` | 切换**总开关**（body: `{"enabled": true}`，即点即生效；关闭后所有任务都不自动执行） |
+| POST/PUT | `/api/schedule/tasks` `/{id}` | 新增任务／修改任务指令与开关（body: `{"command": "...", "enabled": true}`，指令上限 500 字且唯一） |
+| PUT/DELETE | `/api/schedule/tasks/{id}/enabled` `/{id}` | 单个任务的自动执行开关／删除任务（`?withRuns=false` 可保留执行记录） |
+| DELETE | `/api/schedule/runs?taskId=&createdAt=` | 删除单条执行记录 |
+| POST | `/api/schedule/mode` | 修改推送方式（body: `{"mode": "text\|markdown\|file"}`，非法值落回 `text`） |
+| GET/POST | `/api/notify/channels` | 推送通道列表（含脱敏地址与已选集合）/ 新增或保存（`url` 留空表示沿用原地址，`originalName` 非空表示改名） |
+| DELETE | `/api/notify/channels/{name}` | 删除通道（自动从已选集合中摘除） |
+| PUT | `/api/notify/selected` | 多选：整体提交选中集合（body: `{"names": ["通道A","通道B"]}`） |
+| POST | `/api/notify/channels/{name}/test` | 单通道测试推送（立即实发一条，验证地址是否有效） |
+| POST | `/api/schedule/run-now` | 立即试跑（body 可带 `{"taskId": 1}` 指定任务，不带则跑第一个；同步返回，约 1 分钟） |
 | GET | `/api/agent/scenarios` / `/api/agent/info` | 示例建议 / 服务信息 |
 
 SSE 事件：`status` / `phase` / `intent` / `plan` / `plan-proposal`（计划提案，等待确认）/ `plan-confirmed` / `step` / `step-state` / `tool` / `reason` / `result-delta`（流式增量）/ `result` / `done`；每个事件携带 `seq` 序号供断线续传。

@@ -62,7 +62,7 @@ const tabs = [
   { key: 'svcs', icon: '⇄', label: '服务映射' },
   { key: 'memory', icon: '🧠', label: '记忆' },
   { key: 'kb', icon: '📚', label: '知识库' },
-  { key: 'morning', icon: '⏰', label: '晨报机器人' },
+  { key: 'morning', icon: '⏰', label: '定时任务' },
   { key: 'tools', icon: '⚙', label: '工具管理' },
   { key: 'llm', icon: '🤖', label: '模型接入' },
 ]

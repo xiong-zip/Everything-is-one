@@ -24,7 +24,7 @@ if not defined DEEPSEEK_API_KEY (
 )
 
 echo [INFO] Starting... first run will auto-download Maven, Node.js and dependencies.
-echo [INFO] When ready, open http://localhost:8080
+echo [INFO] When ready, open http://localhost:8888
 echo.
 
 cd backend
