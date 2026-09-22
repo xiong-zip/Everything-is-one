@@ -1,5 +1,6 @@
 package com.agentflow.schedule;
 
+import com.agentflow.engine.Sqlite;
 import com.agentflow.engine.StoragePaths;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PostConstruct;
@@ -11,7 +12,6 @@ import org.springframework.stereotype.Component;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.Connection;
-import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -100,11 +100,7 @@ public class ScheduleStore {
     }
 
     private Connection open() throws SQLException {
-        Connection c = DriverManager.getConnection(url);
-        try (Statement st = c.createStatement()) {
-            st.execute("PRAGMA busy_timeout=5000");
-        }
-        return c;
+        return Sqlite.open(url);
     }
 
     /* ---------- 定时任务 ---------- */

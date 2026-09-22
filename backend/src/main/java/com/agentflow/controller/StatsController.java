@@ -12,19 +12,27 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
-/** 效能统计：GitLab 提交热力图（结果缓存 10 分钟，避免每次打开都打 GitLab） */
+/** 效能统计：GitLab 提交热力图（按账户+天数分槽缓存 10 分钟，避免每次打开都打 GitLab） */
 @RestController
 @RequestMapping("/api/stats")
 public class StatsController {
 
     private static final long CACHE_MS = 10 * 60_000L;
+    /** 最多保留几个账户×天数的缓存槽：来回切换账户时秒回，不用每次全量抓 6~16 秒 */
+    private static final int MAX_SLOTS = 4;
 
     private final GitLabTool gitLabTool;
 
-    private volatile Map<String, Object> cache;
-    private volatile long cacheAt;
-    private volatile int cacheDays = -1;
-    private volatile String cacheAccount = "";
+    private record Slot(Map<String, Object> data, long at) {
+    }
+
+    /** key = token指纹|days；单槽缓存会让切换账户必然全量重抓，放大前端过期响应竞态 */
+    private final Map<String, Slot> slots = new LinkedHashMap<>() {
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<String, Slot> eldest) {
+            return size() > MAX_SLOTS;
+        }
+    };
 
     public StatsController(GitLabTool gitLabTool) {
         this.gitLabTool = gitLabTool;
@@ -33,11 +41,13 @@ public class StatsController {
     @GetMapping("/heatmap")
     public Map<String, Object> heatmap(@RequestParam(defaultValue = "182") int days) {
         days = Math.max(30, Math.min(days, 400));
-        Map<String, Object> cached = cache;
-        String account = gitLabTool.tokenFingerprint();
-        if (cached != null && cacheDays == days && account.equals(cacheAccount)
-                && System.currentTimeMillis() - cacheAt < CACHE_MS) {
-            return cached;
+        String key = gitLabTool.tokenFingerprint() + "|" + days;
+        Slot hit;
+        synchronized (slots) {
+            hit = slots.get(key);
+        }
+        if (hit != null && System.currentTimeMillis() - hit.at() < CACHE_MS) {
+            return hit.data();
         }
         Map<String, Object> out = new LinkedHashMap<>();
         if (!gitLabTool.isConfigured()) {
@@ -79,15 +89,12 @@ public class StatsController {
             out.put("enabled", true);
             out.put("error", "GitLab 查询失败：" + ex.getMessage());
             out.put("days", days);
+            // 失败不进缓存：下一次打开能立刻重试，而不是把错误结果钉 10 分钟
+            return out;
         }
-        cache(out, days);
+        synchronized (slots) {
+            slots.put(key, new Slot(out, System.currentTimeMillis()));
+        }
         return out;
-    }
-
-    private void cache(Map<String, Object> data, int days) {
-        this.cache = data;
-        this.cacheDays = days;
-        this.cacheAccount = gitLabTool.tokenFingerprint();
-        this.cacheAt = System.currentTimeMillis();
     }
 }

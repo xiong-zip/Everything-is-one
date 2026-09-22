@@ -73,6 +73,28 @@
         </div>
         <div v-if="message" class="td-message" :class="message.cls">{{ message.text }}</div>
 
+        <!-- 向量检索状态：未配置提示关键词模式；已配置展示索引进度与重建入口 -->
+        <div class="kb-vector" :class="{ on: vector.enabled }">
+          <template v-if="vector.enabled">
+            <span class="kb-vector-dot" aria-hidden="true"></span>
+            <span>
+              语义检索已启用 · 模型 <code>{{ vector.model }}</code> · 已索引
+              <b>{{ vector.embeddedChunks || 0 }}</b>/{{ vector.totalChunks || 0 }} 块
+              <template v-if="vector.embeddedChunks < vector.totalChunks">（缺失的部分走关键词打分）</template>
+            </span>
+            <button
+              class="btn btn-ghost kb-vector-rebuild"
+              type="button"
+              :disabled="rebuilding"
+              @click="rebuildVector"
+            >{{ rebuilding ? '重建中…' : '重建索引' }}</button>
+          </template>
+          <template v-else>
+            <span class="kb-vector-dot off" aria-hidden="true"></span>
+            <span>当前为关键词检索；在 .env 配置 <code>AGENTFLOW_EMBED_URL</code> / <code>AGENTFLOW_EMBED_MODEL</code>（可选 <code>AGENTFLOW_EMBED_KEY</code>）并重启，即可启用「语义 + 关键词」混合检索</span>
+          </template>
+        </div>
+
         <!-- 试搜结果：点击命中可直接跳到对应文件详情 -->
         <div v-if="hits" class="kb-hits">
           <div class="kb-hits-head">
@@ -106,6 +128,7 @@
 
 <script setup>
 import { onMounted, ref } from 'vue'
+import { api, toastError } from '../api/client'
 import { showToast } from '../composables/useToast'
 
 const emit = defineEmits(['run'])
@@ -118,6 +141,9 @@ const message = ref(null)
 const searchQ = ref('')
 const searching = ref(false)
 const hits = ref(null)
+// 向量检索状态（未配置时 enabled=false，界面提示关键词模式）
+const vector = ref({})
+const rebuilding = ref(false)
 // 详情视图状态
 const detail = ref(null)
 const detailText = ref('')
@@ -134,10 +160,35 @@ function iconOf(filename) {
 async function load() {
   loading.value = true
   try {
-    const res = await fetch('/api/kb/files')
-    if (res.ok) files.value = (await res.json()).items || []
-  } catch { /* 静默 */ } finally {
+    files.value = (await api.get('/api/kb/files')).items || []
+  } catch (err) {
+    toastError(err)
+  } finally {
     loading.value = false
+  }
+  loadVector()
+}
+
+async function loadVector() {
+  try {
+    vector.value = await api.get('/api/kb/vector')
+  } catch {
+    vector.value = { enabled: false }
+  }
+}
+
+/* 重建向量索引：为缺失向量的分块补嵌入；换过模型时后端会先清空旧向量 */
+async function rebuildVector() {
+  if (rebuilding.value) return
+  rebuilding.value = true
+  try {
+    const res = await api.post('/api/kb/vector/rebuild')
+    showToast(`向量索引完成：新嵌入 ${res.embedded} 块（共 ${res.embeddedChunks}/${res.totalChunks} 块）`)
+  } catch (err) {
+    toastError(err)
+  } finally {
+    rebuilding.value = false
+    loadVector()
   }
 }
 

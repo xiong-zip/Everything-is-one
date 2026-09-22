@@ -18,6 +18,7 @@ import org.springframework.web.client.HttpStatusCodeException;
 import org.springframework.web.client.RestClient;
 
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -64,15 +65,31 @@ public class GitLabAccountController {
         if (token.isEmpty()) {
             throw new IllegalArgumentException("Access Token 不能为空");
         }
+        List<String> authors = sanitizeAuthors(req.authors, existing);
         // 保存前就没有可用账户时（如第一个账户），新账户自动设为默认；已有默认则不打扰
         boolean hadActive = store.effectiveActive() != null;
-        if (!store.save(new GitLabAccount(name, token, existing == null ? null : existing.createdAt()))) {
+        if (!store.save(new GitLabAccount(name, token, existing == null ? null : existing.createdAt(), authors))) {
             throw new IllegalArgumentException("保存失败，请检查后重试");
         }
         if (!hadActive) {
             store.setActive(name);
         }
         return Map.of("ok", "saved");
+    }
+
+    /** 别名清理：去空白、限 8 条、每条最长 64；编辑未传时沿用已保存值 */
+    private static List<String> sanitizeAuthors(List<String> input, GitLabAccount existing) {
+        List<String> fromReq = input == null ? null : input.stream()
+                .filter(a -> a != null && !a.isBlank())
+                .map(String::trim)
+                .filter(a -> a.length() <= 64)
+                .distinct()
+                .limit(8)
+                .toList();
+        if (fromReq == null) {
+            return existing == null ? List.of() : existing.authors();
+        }
+        return fromReq;
     }
 
     /** 设为当前使用的账户；name 传空表示取消默认（只剩一个账户时它自动生效） */
@@ -122,7 +139,7 @@ public class GitLabAccountController {
         }
     }
 
-    public record AccountRequest(String name, String token) {
+    public record AccountRequest(String name, String token, List<String> authors) {
     }
 
     private static boolean isBlank(String s) {

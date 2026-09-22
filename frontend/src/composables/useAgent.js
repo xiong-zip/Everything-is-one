@@ -85,6 +85,13 @@ export function useAgent() {
 
   /* instant=true 时不做打字动画，用于历史回放 */
   function handlersFor(run, instant = false) {
+    /* 打字动画串行队列：dispatch 不 await，如果每条推理行各起一个定时器，
+       并行步骤会同时跑 N 个 14ms 计时器写响应式状态，白白放大重渲染。
+       另外只给前几条做动画——用户看的是开头的推理过程，后面的行直接落地更省。 */
+    const MAX_ANIMATED_REASONS = 2
+    let reasonQueue = Promise.resolve()
+    let animatedReasons = 0
+
     return {
       status(d) {
         run.status.text = d.text
@@ -153,13 +160,17 @@ export function useAgent() {
         const st = run.steps[d.index]
         if (st) st.tools.push({ name: d.name, args: d.args })
       },
-      async reason(d) {
+      reason(d) {
         const st = run.steps[d.index]
         if (!st) return
-        const line = { shown: instant ? d.line : '' }
+        if (instant || animatedReasons >= MAX_ANIMATED_REASONS) {
+          st.reasons.push({ shown: d.line })
+          return
+        }
+        const line = { shown: '' }
         st.reasons.push(line)
-        if (instant) return
-        await typeInto(line, d.line)
+        animatedReasons++
+        reasonQueue = reasonQueue.then(() => typeInto(line, d.line)).catch(() => {})
       },
       /* write 步流式增量：先建一个持续增长的 copy 结果，收尾由 result 事件整体覆盖 */
       'result-delta'(d) {

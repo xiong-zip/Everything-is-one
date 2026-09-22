@@ -1,10 +1,9 @@
 package com.agentflow.tool.dynamic;
 
+import com.agentflow.tool.ResponseDigest;
 import com.agentflow.tool.Tool;
 import com.agentflow.tool.ToolHttpClient;
 import com.agentflow.tool.ToolResult;
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.web.client.RestClient;
 
 import java.net.URLEncoder;
@@ -15,17 +14,12 @@ import java.util.Map;
 
 /**
  * 运行期注册的工具：按配置拼 URL 调用 HTTP 接口（仅 GET），
- * 响应摘要化后交给 LLM。响应体截断，防止大响应撑爆上下文。
+ * 响应经 {@link ResponseDigest} 摘要化后交给 LLM（截断防大响应撑爆上下文）。
  */
 public class DynamicTool implements Tool {
 
-    private static final int MAX_LIST_ITEMS = 12;
-    private static final int MAX_ITEM_CHARS = 150;
-    private static final int MAX_RAW_CHARS = 800;
-
     private final ToolHttpClient httpClient;
     private final DynamicToolConfig config;
-    private final ObjectMapper mapper = new ObjectMapper();
 
     public DynamicTool(ToolHttpClient httpClient, DynamicToolConfig config) {
         this.httpClient = httpClient;
@@ -60,7 +54,7 @@ public class DynamicTool implements Tool {
         try {
             RestClient restClient = httpClient.restClient();
             String body = restClient.get().uri(url).retrieve().body(String.class);
-            return summarize(body == null ? "" : body, url);
+            return ResponseDigest.summarize(config.name(), body == null ? "" : body);
         } catch (Exception ex) {
             return ToolResult.note("调用 " + config.name() + " 失败：" + ex.getMessage());
         }
@@ -88,44 +82,6 @@ public class DynamicTool implements Tool {
             url.append("?").append(String.join("&", query));
         }
         return url.toString();
-    }
-
-    /** 响应摘要：数组逐条、对象拍平顶层键值，超长截断；非 JSON 原样截断 */
-    private ToolResult summarize(String body, String url) {
-        if (body.isBlank()) {
-            return ToolResult.note(config.name() + " 返回空响应");
-        }
-        try {
-            JsonNode root = mapper.readTree(body);
-            List<String> list = new ArrayList<>();
-            if (root.isArray()) {
-                int i = 0;
-                for (JsonNode item : root) {
-                    if (i++ >= MAX_LIST_ITEMS) {
-                        list.add("…（共 " + root.size() + " 条，仅展示前 " + MAX_LIST_ITEMS + " 条）");
-                        break;
-                    }
-                    list.add(truncate(item.isValueNode() ? item.asText() : item.toString(), MAX_ITEM_CHARS));
-                }
-                return new ToolResult("list", null, list, config.name() + " 返回 " + root.size() + " 条数据");
-            }
-            if (root.isObject()) {
-                root.fields().forEachRemaining(e -> {
-                    if (list.size() < MAX_LIST_ITEMS) {
-                        JsonNode v = e.getValue();
-                        list.add(e.getKey() + ": " + truncate(v.isValueNode() ? v.asText() : v.toString(), MAX_ITEM_CHARS));
-                    }
-                });
-                return new ToolResult("list", null, list, config.name() + " 返回结果");
-            }
-            return ToolResult.note(truncate(body, MAX_RAW_CHARS));
-        } catch (Exception ex) {
-            return ToolResult.note(truncate(body, MAX_RAW_CHARS));
-        }
-    }
-
-    private static String truncate(String s, int max) {
-        return s == null ? "" : (s.length() <= max ? s : s.substring(0, max) + "…");
     }
 
     private static String enc(String s) {

@@ -30,25 +30,66 @@
       <div class="hd-list">
         <div v-if="loading" class="hd-empty">加载中…</div>
         <div v-else-if="!tools.length" class="hd-empty">还没有注册的工具</div>
-        <details v-for="t in tools" :key="t.name" class="td-item">
+        <details v-for="t in tools" :key="t.name" class="td-item" :class="{ off: t.disabled }">
           <summary class="td-summary">
             <span class="td-main">
               <span class="td-name">
                 <code>{{ t.name }}</code>
                 <span v-if="t.dynamic" class="td-tag dynamic">动态</span>
                 <span v-if="t.requiresConfirm" class="td-tag warn">写操作</span>
+                <span v-if="t.disabled" class="td-tag off-tag">已停用</span>
               </span>
+              <!-- 折叠态也带一行描述：工具名是英文标识，不点开根本不知道是干什么的 -->
+              <span class="td-desc-line" :title="t.description">{{ t.description }}</span>
             </span>
-            <button
-              v-if="t.dynamic"
-              class="hd-del"
-              type="button"
-              aria-label="删除该工具"
-              @click.prevent.stop="removeTool(t.name)"
-            >✕</button>
+            <span class="td-ops">
+              <button
+                class="td-op"
+                type="button"
+                :title="t.disabled ? '重新启用：恢复进入规划提示词' : '停用：不进规划提示词，直接省 token'"
+                @click.prevent.stop="toggleDisabled(t)"
+              >{{ t.disabled ? '启用' : '停用' }}</button>
+              <button
+                v-if="t.dynamic"
+                class="td-op"
+                type="button"
+                title="编辑名称与描述"
+                @click.prevent.stop="startEdit(t)"
+              >编辑</button>
+              <button
+                v-if="t.dynamic"
+                class="hd-del"
+                type="button"
+                aria-label="删除该工具"
+                @click.prevent.stop="removeTool(t.name)"
+              >✕</button>
+            </span>
           </summary>
           <div class="td-detail">
-            <div class="td-desc">{{ t.description }}</div>
+            <!-- 动态工具编辑：名称与描述都是规划 prompt 里给模型看的内容，改描述能提升工具选择准确度 -->
+            <div v-if="editing === t.name" class="td-edit">
+              <label class="td-edit-field">
+                <span>工具名</span>
+                <input v-model="editForm.name" class="td-input" />
+              </label>
+              <label class="td-edit-field">
+                <span>描述（模型据此判断何时用这个工具）</span>
+                <textarea v-model="editForm.description" class="td-input" rows="3"></textarea>
+              </label>
+              <div class="td-edit-actions">
+                <button class="btn btn-primary" type="button" :disabled="saving" @click="saveEdit(t)">
+                  {{ saving ? '保存中…' : '保存' }}
+                </button>
+                <button class="btn btn-ghost" type="button" @click="editing = null">取消</button>
+              </div>
+            </div>
+            <template v-else>
+              <div class="td-desc">{{ t.description }}</div>
+              <div v-if="t.argsHint && t.argsHint !== '{}'" class="td-args">
+                <span class="td-args-label">参数</span>
+                <code>{{ t.argsHint }}</code>
+              </div>
+            </template>
           </div>
         </details>
       </div>
@@ -61,6 +102,7 @@
 defineProps({ embedded: { type: Boolean, default: false } })
 
 import { onMounted, ref } from 'vue'
+import { api, toastError } from '../api/client'
 
 defineEmits(['close'])
 
@@ -69,14 +111,55 @@ const loading = ref(false)
 const specUrl = ref('')
 const importing = ref(false)
 const message = ref(null)
+const editing = ref(null)
+const saving = ref(false)
+const editForm = ref({ name: '', description: '' })
 
 async function load() {
   loading.value = true
   try {
-    const res = await fetch('/api/tools')
-    if (res.ok) tools.value = await res.json()
-  } catch { /* 静默 */ } finally {
+    tools.value = await api.get('/api/tools')
+  } catch (err) {
+    toastError(err)
+  } finally {
     loading.value = false
+  }
+}
+
+/* 停用/启用：停用后不进规划提示词（省 token、聚焦工具集），执行入口保留 */
+async function toggleDisabled(t) {
+  const next = !t.disabled
+  t.disabled = next
+  try {
+    await api.put(`/api/tools/${encodeURIComponent(t.name)}/disabled`, { disabled: next })
+    message.value = { text: next ? `${t.name} 已停用，不再进入规划提示词` : `${t.name} 已启用`, cls: 'ok' }
+    await load()
+  } catch (err) {
+    t.disabled = !next
+    toastError(err)
+  }
+}
+
+function startEdit(t) {
+  editing.value = t.name
+  editForm.value = { name: t.name, description: t.description || '' }
+}
+
+async function saveEdit(t) {
+  if (saving.value) return
+  saving.value = true
+  try {
+    const data = await api.put(`/api/tools/${encodeURIComponent(t.name)}`, {
+      name: editForm.value.name.trim(),
+      description: editForm.value.description.trim(),
+    })
+    message.value = { text: `已保存${data.name !== t.name ? `，工具更名为 ${data.name}` : ''}`, cls: 'ok' }
+    editing.value = null
+    await load()
+  } catch (err) {
+    toastError(err)
+  } finally {
+    saving.value = false
   }
 }
 
@@ -104,10 +187,14 @@ async function importOpenApi() {
 }
 
 async function removeTool(name) {
+  if (!window.confirm(`确定删除工具 ${name}？此操作不可撤销（内置工具请改用停用）。`)) return
   tools.value = tools.value.filter((t) => t.name !== name)
   try {
-    await fetch(`/api/tools/${encodeURIComponent(name)}`, { method: 'DELETE' })
-  } catch { /* 静默 */ }
+    await api.del(`/api/tools/${encodeURIComponent(name)}`)
+  } catch (err) {
+    toastError(err)
+    await load()
+  }
 }
 
 onMounted(load)

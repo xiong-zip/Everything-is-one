@@ -23,6 +23,10 @@
             <span>Access Token{{ editing ? '（留空沿用原 Token）' : '' }}</span>
             <input v-model="form.token" class="db-input" type="password" placeholder="glpat-xxxxxxxxxxxxxxxx" />
           </label>
+          <label class="db-field db-w2">
+            <span>提交作者别名（可选，逗号分隔）</span>
+            <input v-model="form.authors" class="db-input" placeholder="本机 git 配置的作者名或邮箱，如 xiaoxiong, me@qq.com" />
+          </label>
         </div>
         <div class="db-form-actions">
           <button class="btn btn-primary" type="button" :disabled="saving" @click="save">
@@ -32,8 +36,9 @@
         </div>
         <div v-if="message" class="td-message" :class="message.cls">{{ message.text }}</div>
         <p class="gl-hint">
-          Token 在 GitLab「用户设置 → 访问令牌」创建，勾选 <b>api</b> 权限即可（含读写）。
-          保存后立即生效，无需重启。
+          Token 在 GitLab「用户设置 → 访问令牌」创建，勾选 <b>api</b> 权限即可（含读写）。保存后立即生效，无需重启。<br />
+          本机 git 配置的作者名/邮箱若与 GitLab 档案不一致（很常见），日报周报会整批漏掉这些提交——
+          在「提交作者别名」里补上 git 实际使用的名字或邮箱即可认回来。
         </p>
       </div>
 
@@ -49,7 +54,12 @@
               <span v-if="a.name === activeName" class="db-active-badge">★ 使用中</span>
               <span class="db-host">{{ a.tokenMasked }}</span>
             </div>
-            <div class="db-item-dbs">添加于 {{ a.createdAt }}</div>
+            <div class="db-item-dbs">
+              添加于 {{ a.createdAt }}
+              <template v-if="a.authors && a.authors.length">
+                · 识别作者 {{ a.authors.join('、') }}
+              </template>
+            </div>
           </div>
           <div class="db-item-ops">
             <button v-if="a.name !== activeName" class="db-op" type="button" @click="makeActive(a.name)">设为默认</button>
@@ -128,8 +138,17 @@ const saving = ref(false)
 const testing = ref('')
 const editing = ref(null)
 const message = ref(null)
-const emptyForm = { name: '', token: '' }
+const emptyForm = { name: '', token: '', authors: '' }
 const form = ref({ ...emptyForm })
+
+/* 别名输入支持中英文逗号/分号/空白分隔 */
+function parseAuthors(text) {
+  return String(text || '')
+    .split(/[,，;；、\s]+/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .slice(0, 8)
+}
 
 const stats = ref({})
 const loadingStats = ref(false)
@@ -152,14 +171,22 @@ async function loadAccounts() {
 
 /* 设为默认账户：提交、日报周报与热力图都切换到该账户口径 */
 async function makeActive(name) {
+  const prev = activeName.value
   activeName.value = name
   try {
-    await fetch('/api/gitlab/accounts/active', {
+    const res = await fetch('/api/gitlab/accounts/active', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name }),
     })
-  } catch { /* 静默 */ }
+    // fetch 只在网络层失败时抛异常，HTTP 4xx/5xx 同样算切换失败——
+    // 这里不检查的话，界面显示「已切换」但后端还是旧账户（热力图也就不会变）
+    if (!res.ok) throw new Error('HTTP ' + res.status)
+  } catch (err) {
+    activeName.value = prev
+    message.value = { text: `切换到 ${name} 失败（${err.message || '后端不可用'}），仍使用 ${prev || '原账户'}`, cls: 'err' }
+    return
+  }
   message.value = { text: `已切换到 ${name}，热力图与后续查询按该账户身份执行`, cls: 'ok' }
   loadStats()
 }
@@ -172,7 +199,7 @@ async function save() {
     const res = await fetch('/api/gitlab/accounts', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...form.value }),
+      body: JSON.stringify({ name: form.value.name, token: form.value.token, authors: parseAuthors(form.value.authors) }),
     })
     const data = await res.json()
     if (!res.ok) throw new Error(data.error || '保存失败')
@@ -189,7 +216,7 @@ async function save() {
 
 function edit(a) {
   editing.value = a.name
-  form.value = { name: a.name, token: '' }
+  form.value = { name: a.name, token: '', authors: (a.authors || []).join(', ') }
 }
 
 function resetForm() {
@@ -223,15 +250,22 @@ async function remove(name) {
 
 /* ---------- 热力图 ---------- */
 
+/* 热力图请求序号：切换账户后首次抓取要 6~16 秒，等待期间再点一次切换的话，
+   后完成的旧账户响应会覆盖新账户的数据，界面停在「A 选中 + B 的图」——只应用最新一次请求的结果 */
+let statsReqSeq = 0
+
 async function loadStats() {
+  const seq = ++statsReqSeq
   loadingStats.value = true
   try {
     // 起点对齐到周一，保证热力图第一列是完整一周，避免首列只在部分行出现
     const dow = (new Date().getDay() + 6) % 7 // 周一=0 … 周日=6
     const res = await fetch('/api/stats/heatmap?days=' + (365 + dow))
-    if (res.ok) stats.value = await res.json()
+    // 已有更新的切换发生：本次响应作废，loading 也交给新请求收尾
+    if (!res.ok || seq !== statsReqSeq) return
+    stats.value = await res.json()
   } catch { /* 静默 */ } finally {
-    loadingStats.value = false
+    if (seq === statsReqSeq) loadingStats.value = false
   }
 }
 

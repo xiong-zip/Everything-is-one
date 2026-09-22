@@ -1,5 +1,6 @@
 package com.agentflow.tool.dynamic;
 
+import com.agentflow.engine.Sqlite;
 import com.agentflow.engine.StoragePaths;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PostConstruct;
@@ -11,7 +12,6 @@ import org.springframework.stereotype.Component;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.Connection;
-import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -45,7 +45,7 @@ public class ToolStore {
     }
 
     @PostConstruct
-    void init() {
+    public void init() {
         try (Connection c = open(); Statement st = c.createStatement()) {
             st.execute("CREATE TABLE IF NOT EXISTS tools (" +
                     "name TEXT PRIMARY KEY," +
@@ -59,11 +59,7 @@ public class ToolStore {
     }
 
     private Connection open() throws SQLException {
-        Connection c = DriverManager.getConnection(url);
-        try (Statement st = c.createStatement()) {
-            st.execute("PRAGMA busy_timeout=5000");
-        }
-        return c;
+        return Sqlite.open(url);
     }
 
     /** 保存（按 name 覆盖）并返回是否新建 */

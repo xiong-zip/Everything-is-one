@@ -11,12 +11,12 @@ import org.springframework.stereotype.Component;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.Connection;
-import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -76,16 +76,30 @@ public class RunStore {
                     "seq INTEGER NOT NULL," +
                     "event TEXT NOT NULL," +
                     "data TEXT NOT NULL)");
-            st.execute("CREATE INDEX IF NOT EXISTS idx_events_run ON events(run_id, seq)");
-            // 上次进程未正常收尾的任务（停留 running）标记为中断，避免历史里永远"进行中"
-            st.executeUpdate("UPDATE runs SET status = 'interrupted' WHERE status = 'running'");
-            // 多对话模型：runs 归属到 session（旧库补列，默认归入 default 对话）
+            // 多对话模型：runs 归属到 session（旧库补列，默认归入 default 对话）。
+            // 必须排在引用 session_id 的索引之前，否则新库上索引先报「no such column」而中断初始化。
             try {
                 st.execute("ALTER TABLE runs ADD COLUMN session_id TEXT DEFAULT 'default'");
             } catch (SQLException ignore) { /* 列已存在 */ }
-            applyRetention(st);
+            st.execute("CREATE INDEX IF NOT EXISTS idx_events_run ON events(run_id, seq)");
+            // taskId 反查（SSE 重连）与按会话分页取消息都靠这两个索引，否则全表扫描
+            st.execute("CREATE INDEX IF NOT EXISTS idx_runs_task ON runs(task_id)");
+            st.execute("CREATE INDEX IF NOT EXISTS idx_runs_session ON runs(session_id, id)");
         } catch (Exception ex) {
             log.error("初始化 SQLite 失败，历史记录将不可用：{}", ex.getMessage());
+            return;
+        }
+        // 以下都是可选的维护动作：任何一步失败都不该让上面的建表结果连带失效
+        try (Connection c = open(); Statement st = c.createStatement()) {
+            // 上次进程未正常收尾的任务（停留 running）标记为中断，避免历史里永远"进行中"
+            st.executeUpdate("UPDATE runs SET status = 'interrupted' WHERE status = 'running'");
+        } catch (Exception ex) {
+            log.warn("标记中断任务失败：{}", ex.getMessage());
+        }
+        try (Connection c = open(); Statement st = c.createStatement()) {
+            applyRetention(st);
+        } catch (Exception ex) {
+            log.warn("应用历史保留策略失败：{}", ex.getMessage());
         }
     }
 
@@ -109,11 +123,33 @@ public class RunStore {
     }
 
     private Connection open() throws SQLException {
-        Connection c = DriverManager.getConnection(url);
-        try (Statement st = c.createStatement()) {
-            st.execute("PRAGMA busy_timeout=5000");
+        return Sqlite.open(url);
+    }
+
+    /**
+     * 多语句写操作包在一个事务里，避免中途失败留下孤儿事件或半删状态。
+     *
+     * <p>连接按操作开关、不常驻：WAL + synchronous=NORMAL 已经消掉了「每次提交一次 fsync」这个
+     * 主要开销，而常驻写连接会让进程在整个生命周期里占着库文件（Windows 上连临时目录都删不掉），
+     * 代价大于省下的那点建连时间。
+     */
+    private void inTransaction(String what, SqlOp op) {
+        try (Connection c = open()) {
+            c.setAutoCommit(false);
+            try {
+                op.run(c);
+                c.commit();
+            } catch (Exception ex) {
+                Sqlite.rollbackQuietly(c);
+                log.warn("{} 失败：{}", what, ex.getMessage());
+            }
+        } catch (Exception ex) {
+            log.warn("{} 失败：{}", what, ex.getMessage());
         }
-        return c;
+    }
+
+    private interface SqlOp {
+        void run(Connection c) throws Exception;
     }
 
     /** 新建运行记录，返回数据库 id；失败返回 -1（后续持久化自动跳过） */
@@ -186,11 +222,12 @@ public class RunStore {
     /**
      * 按会话分页读消息（从最新往回取一页，返回时恢复正序）。
      * beforeId 为空取最新一页；多取一条探测 hasMore。
+     * 这里连 output 一起取，让调用方无需再逐条 getRun 补字段。
      */
     public SessionPage listRunsBySessionPage(String sessionId, int limit, Long beforeId) {
         List<Map<String, Object>> desc = new ArrayList<>();
         StringBuilder sql = new StringBuilder(
-                "SELECT id, command, summary, status, created_at FROM runs WHERE session_id = ?");
+                "SELECT id, command, summary, output, status, created_at FROM runs WHERE session_id = ?");
         if (beforeId != null) {
             sql.append(" AND id < ?");
         }
@@ -203,7 +240,7 @@ public class RunStore {
             }
             ps.setInt(i, limit + 1);
             try (ResultSet rs = ps.executeQuery()) {
-                collectRuns(rs, desc);
+                collectRunsWithOutput(rs, desc);
             }
         } catch (Exception ex) {
             log.warn("分页读取对话消息失败：{}", ex.getMessage());
@@ -218,7 +255,7 @@ public class RunStore {
 
     /** 删除整个对话（含全部消息与事件） */
     public void deleteSession(String sessionId) {
-        try (Connection c = open()) {
+        inTransaction("删除对话", c -> {
             try (PreparedStatement ps = c.prepareStatement(
                     "DELETE FROM events WHERE run_id IN (SELECT id FROM runs WHERE session_id = ?)")) {
                 ps.setString(1, sessionId);
@@ -228,9 +265,7 @@ public class RunStore {
                 ps.setString(1, sessionId);
                 ps.executeUpdate();
             }
-        } catch (Exception ex) {
-            log.warn("删除对话失败：{}", ex.getMessage());
-        }
+        });
     }
 
     public void saveEvent(long runId, int seq, String event, Object data) {
@@ -305,8 +340,32 @@ public class RunStore {
         }
     }
 
+    /** 供分页回放使用：比 collectRuns 多带 output，字段与 getRun 保持一致 */
+    private static void collectRunsWithOutput(ResultSet rs, List<Map<String, Object>> out) throws SQLException {
+        while (rs.next()) {
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("id", rs.getLong("id"));
+            m.put("command", rs.getString("command"));
+            m.put("summary", rs.getString("summary"));
+            m.put("output", rs.getString("output"));
+            m.put("status", rs.getString("status"));
+            m.put("createdAt", rs.getString("created_at"));
+            out.add(m);
+        }
+    }
+
     /** 单次运行的完整事件流，供回放 */
     public Map<String, Object> getRun(long runId) {
+        Map<String, Object> run = getRunMeta(runId);
+        if (run == null) {
+            return null;
+        }
+        run.put("events", listEvents(runId, -1));
+        return run;
+    }
+
+    /** 单次运行的元信息（不含事件流），供需要自行批量取事件的调用方使用 */
+    public Map<String, Object> getRunMeta(long runId) {
         Map<String, Object> run = null;
         try (Connection c = open();
              PreparedStatement ps = c.prepareStatement(
@@ -326,15 +385,44 @@ public class RunStore {
         } catch (Exception ex) {
             log.warn("读取运行记录失败：{}", ex.getMessage());
         }
-        if (run == null) {
-            return null;
-        }
-        run.put("events", listEvents(runId, -1));
         return run;
     }
 
+    /**
+     * 一批运行的事件流（按 run_id 分组，组内按 seq 升序）。
+     * 会话回放原本逐条 getRun，一次请求放大成 limit+1 次查询，这里收敛为一次 IN 查询。
+     */
+    public Map<Long, List<Map<String, Object>>> listEventsByRunIds(Collection<Long> runIds) {
+        Map<Long, List<Map<String, Object>>> grouped = new LinkedHashMap<>();
+        if (runIds == null || runIds.isEmpty()) {
+            return grouped;
+        }
+        for (Long id : runIds) {
+            grouped.put(id, new ArrayList<>());
+        }
+        String sql = "SELECT run_id, event, data FROM events WHERE run_id IN (" +
+                String.join(",", Collections.nCopies(runIds.size(), "?")) + ") ORDER BY run_id, seq";
+        try (Connection c = open(); PreparedStatement ps = c.prepareStatement(sql)) {
+            int i = 1;
+            for (Long id : runIds) {
+                ps.setLong(i++, id);
+            }
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    Map<String, Object> e = new LinkedHashMap<>();
+                    e.put("event", rs.getString("event"));
+                    e.put("data", mapper.readTree(rs.getString("data")));
+                    grouped.computeIfAbsent(rs.getLong("run_id"), k -> new ArrayList<>()).add(e);
+                }
+            }
+        } catch (Exception ex) {
+            log.warn("批量读取事件流失败：{}", ex.getMessage());
+        }
+        return grouped;
+    }
+
     public void deleteRun(long runId) {
-        try (Connection c = open()) {
+        inTransaction("删除运行记录", c -> {
             try (PreparedStatement ps = c.prepareStatement("DELETE FROM events WHERE run_id = ?")) {
                 ps.setLong(1, runId);
                 ps.executeUpdate();
@@ -343,9 +431,7 @@ public class RunStore {
                 ps.setLong(1, runId);
                 ps.executeUpdate();
             }
-        } catch (Exception ex) {
-            log.warn("删除运行记录失败：{}", ex.getMessage());
-        }
+        });
     }
 
     /** afterSeq 之后的存量事件（断线续传补发用），data 反序列化为 JsonNode */
@@ -386,11 +472,11 @@ public class RunStore {
     }
 
     public void clearAll() {
-        try (Connection c = open(); Statement st = c.createStatement()) {
-            st.executeUpdate("DELETE FROM events");
-            st.executeUpdate("DELETE FROM runs");
-        } catch (Exception ex) {
-            log.warn("清空历史失败：{}", ex.getMessage());
-        }
+        inTransaction("清空历史", c -> {
+            try (Statement st = c.createStatement()) {
+                st.executeUpdate("DELETE FROM events");
+                st.executeUpdate("DELETE FROM runs");
+            }
+        });
     }
 }

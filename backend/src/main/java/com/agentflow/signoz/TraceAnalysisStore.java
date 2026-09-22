@@ -1,5 +1,6 @@
 package com.agentflow.signoz;
 
+import com.agentflow.engine.Sqlite;
 import com.agentflow.engine.StoragePaths;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
@@ -10,7 +11,6 @@ import org.springframework.stereotype.Component;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.Connection;
-import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -106,34 +106,25 @@ public class TraceAnalysisStore {
     public long record(AnalysisRecord r) {
         String now = java.time.LocalDateTime.now()
                 .format(java.time.format.DateTimeFormatter.ofPattern(TS_PATTERN));
-        try (Connection c = open()) {
-            Long existing = findId(c, r.traceId());
-            if (existing != null) {
-                try (PreparedStatement ps = c.prepareStatement(
-                        "UPDATE trace_analysis SET analyzed_at=?, time_range=?, span_count=?, services=?," +
-                                "found=?, failed=?, failure_point=?, error_class=?, signature=?, total_ms=?," +
-                                "env=?, kb_case_id=?, kb_strength=?, analyze_count=analyze_count+1, digest=?" +
-                                " WHERE id=?")) {
-                    bindBody(ps, r, now);
-                    ps.setLong(15, existing);   // WHERE id=? 是第 15 个占位符
-                    ps.executeUpdate();
-                }
-                return existing;
-            }
-            // 列顺序必须与 bindBody 的绑定顺序（1=analyzed_at … 14=digest）一致，trace_id 放在最后
-            try (PreparedStatement ps = c.prepareStatement(
-                    "INSERT INTO trace_analysis(analyzed_at, time_range, span_count, services," +
-                            "found, failed, failure_point, error_class, signature, total_ms, env," +
-                            "kb_case_id, kb_strength, digest, trace_id, analyze_count)" +
-                            " VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)",
-                    Statement.RETURN_GENERATED_KEYS)) {
-                bindBody(ps, r, now);
-                ps.setString(15, r.traceId());
-                ps.executeUpdate();
-                try (ResultSet rs = ps.getGeneratedKeys()) {
-                    return rs.next() ? rs.getLong(1) : -1;
-                }
-            }
+        // 单语句 UPSERT：原来的「先查后插/改」在并发分析同一条链路时会撞唯一索引，
+        // 异常被吞掉后返回 -1，那条分析记录就静默丢了
+        String sql = "INSERT INTO trace_analysis(analyzed_at, time_range, span_count, services," +
+                "found, failed, failure_point, error_class, signature, total_ms, env," +
+                "kb_case_id, kb_strength, digest, trace_id, analyze_count)" +
+                " VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)" +
+                " ON CONFLICT(trace_id) DO UPDATE SET" +
+                " analyzed_at=excluded.analyzed_at, time_range=excluded.time_range," +
+                " span_count=excluded.span_count, services=excluded.services," +
+                " found=excluded.found, failed=excluded.failed," +
+                " failure_point=excluded.failure_point, error_class=excluded.error_class," +
+                " signature=excluded.signature, total_ms=excluded.total_ms, env=excluded.env," +
+                " kb_case_id=excluded.kb_case_id, kb_strength=excluded.kb_strength," +
+                " digest=excluded.digest, analyze_count=analyze_count+1";
+        try (Connection c = open(); PreparedStatement ps = c.prepareStatement(sql)) {
+            bindBody(ps, r, now);
+            ps.executeUpdate();
+            Long id = findId(c, r.traceId());
+            return id == null ? -1 : id;
         } catch (Exception ex) {
             log.warn("写入链路分析记录失败：{}", ex.getMessage());
             return -1;
@@ -223,6 +214,121 @@ public class TraceAnalysisStore {
             log.warn("统计链路分析记录失败：{}", ex.getMessage());
             return 0;
         }
+    }
+
+    /**
+     * 同一故障指纹在历史上出现过几次（精确匹配，不走 LIKE——指纹里可能含 {@code _} 之类的通配符）。
+     * 用于识别「修了又坏」的回归：次数大于 1 说明这个错误模式此前已经发生过。
+     */
+    public int countBySignature(String signature) {
+        if (signature == null || signature.isBlank()) {
+            return 0;
+        }
+        try (Connection c = open(); PreparedStatement ps = c.prepareStatement(
+                "SELECT COUNT(*) FROM trace_analysis WHERE signature = ?")) {
+            ps.setString(1, signature);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next() ? rs.getInt(1) : 0;
+            }
+        } catch (Exception ex) {
+            log.warn("按指纹统计失败：{}", ex.getMessage());
+            return 0;
+        }
+    }
+
+    /** 同一指纹的历史链路 ID（排除当前这条），最近优先，供回归提示写明「上次是哪条链路」 */
+    public List<String> traceIdsBySignature(String signature, String excludeTraceId, int limit) {
+        List<String> out = new ArrayList<>();
+        if (signature == null || signature.isBlank()) {
+            return out;
+        }
+        try (Connection c = open(); PreparedStatement ps = c.prepareStatement(
+                "SELECT trace_id FROM trace_analysis WHERE signature = ? AND trace_id <> ?" +
+                        " ORDER BY analyzed_at DESC LIMIT ?")) {
+            ps.setString(1, signature);
+            ps.setString(2, excludeTraceId == null ? "" : excludeTraceId);
+            ps.setInt(3, Math.max(1, Math.min(limit, 20)));
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    out.add(nz(rs.getString(1)));
+                }
+            }
+        } catch (Exception ex) {
+            log.warn("按指纹查询历史链路失败：{}", ex.getMessage());
+        }
+        return out;
+    }
+
+    /** 找出某条链路对应的分析记录（告警排查结束后回查指纹用） */
+    public AnalysisRecord findByTraceId(String traceId) {
+        if (traceId == null || traceId.isBlank()) {
+            return null;
+        }
+        try (Connection c = open(); PreparedStatement ps = c.prepareStatement(
+                "SELECT * FROM trace_analysis WHERE trace_id = ?")) {
+            ps.setString(1, traceId);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next() ? map(rs) : null;
+            }
+        } catch (Exception ex) {
+            log.warn("按 trace ID 查询分析记录失败：{}", ex.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * 时间窗内的分析记录（时间比较交给 SQLite，见 {@link #recentCount} 同款理由）。
+     * 交班摘要、值班回顾这类「昨晚发生了什么」的问题都走这里。
+     */
+    public List<AnalysisRecord> listSince(int hours, boolean failedOnly, int limit) {
+        int window = Math.max(1, Math.min(hours, 24 * 30));
+        StringBuilder sql = new StringBuilder("SELECT * FROM trace_analysis WHERE analyzed_at >= datetime('now','localtime',?)");
+        if (failedOnly) {
+            sql.append(" AND failed = 1");
+        }
+        sql.append(" ORDER BY analyzed_at DESC, id DESC LIMIT ?");
+        List<AnalysisRecord> out = new ArrayList<>();
+        try (Connection c = open(); PreparedStatement ps = c.prepareStatement(sql.toString())) {
+            ps.setString(1, "-" + window + " hours");
+            ps.setInt(2, Math.max(1, Math.min(limit, 500)));
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    out.add(map(rs));
+                }
+            }
+        } catch (Exception ex) {
+            log.warn("按时间窗读取分析记录失败：{}", ex.getMessage());
+        }
+        return out;
+    }
+
+    /**
+     * 反复出现的故障指纹：同一指纹出现次数达到 minCount 即为「不是偶发」。
+     * 这是「修了又坏」的判定依据——单看一次告警看不出回归，看指纹的重复次数才看得出来。
+     */
+    public List<Map<String, Object>> recurringSignatures(int minCount, int limit) {
+        List<Map<String, Object>> out = new ArrayList<>();
+        try (Connection c = open(); PreparedStatement ps = c.prepareStatement(
+                "SELECT signature, COUNT(*) AS n, MAX(analyzed_at) AS last_at, " +
+                        "GROUP_CONCAT(DISTINCT failure_point) AS points " +
+                        "FROM trace_analysis WHERE signature <> '' GROUP BY signature " +
+                        "HAVING n >= ? ORDER BY n DESC, last_at DESC LIMIT ?")) {
+            ps.setInt(1, Math.max(2, minCount));
+            ps.setInt(2, Math.max(1, Math.min(limit, 50)));
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    Map<String, Object> m = new LinkedHashMap<>();
+                    m.put("signature", nz(rs.getString("signature")));
+                    m.put("count", rs.getInt("n"));
+                    m.put("lastAt", nz(rs.getString("last_at")));
+                    m.put("failurePoints", nz(rs.getString("points")));
+                    out.add(m);
+                }
+            }
+        } catch (Exception ex) {
+            log.warn("统计反复出现的指纹失败：{}", ex.getMessage());
+        }
+        return out;
     }
 
     public AnalysisRecord get(long id) {
@@ -331,11 +437,7 @@ public class TraceAnalysisStore {
     }
 
     private Connection open() throws SQLException {
-        Connection c = DriverManager.getConnection(url);
-        try (Statement st = c.createStatement()) {
-            st.execute("PRAGMA busy_timeout=5000");
-        }
-        return c;
+        return Sqlite.open(url);
     }
 
     private static List<String> split(String csv) {

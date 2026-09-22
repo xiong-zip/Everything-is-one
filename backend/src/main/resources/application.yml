@@ -15,10 +15,49 @@ agentflow:
   # hybrid=混合模式，先按计划执行，工具步未命中/失败时放弃剩余计划、转 ReAct 自主找路（需 LLM）
   agent:
     mode: ${AGENTFLOW_AGENT_MODE:plan}
+  engine:
+    # 运行执行池：有界线程池，队列满时新任务立即失败并如实告知（不无限建线程，也不静默排队）
+    core-threads: ${AGENTFLOW_ENGINE_CORE_THREADS:8}
+    max-threads: ${AGENTFLOW_ENGINE_MAX_THREADS:32}
+    queue-capacity: ${AGENTFLOW_ENGINE_QUEUE_CAPACITY:256}
+    # SSE 连接最长存活时间（毫秒）
+    emitter-timeout-ms: ${AGENTFLOW_ENGINE_EMITTER_TIMEOUT_MS:180000}
+    # 内存里保留的会话数上限（超出按完成情况淘汰；未完成的任务不会被淘汰）
+    max-sessions: ${AGENTFLOW_ENGINE_MAX_SESSIONS:500}
+    # confirm 模式等待用户确认计划的最长时间（分钟）
+    confirm-timeout-min: ${AGENTFLOW_ENGINE_CONFIRM_TIMEOUT_MIN:10}
+    # ReAct 自主循环步数上限；混合模式转入 ReAct 后的额外预算单独收紧
+    max-react-steps: ${AGENTFLOW_ENGINE_MAX_REACT_STEPS:8}
+    max-hybrid-react-steps: ${AGENTFLOW_ENGINE_MAX_HYBRID_REACT_STEPS:4}
+    # 同一并行分组内最大并发数
+    max-parallel: ${AGENTFLOW_ENGINE_MAX_PARALLEL:3}
+  # write 步流式增量攒够多少字符落库+推送一次：越小越像逐字打字，落库次数与之成反比
+  stream-flush-chars: ${AGENTFLOW_STREAM_FLUSH_CHARS:64}
+  tool:
+    # 工具侧出站超时：普通工具走短超时，远程 MCP 走长超时（链路查询本身可能跑几十秒）
+    connect-timeout-ms: ${AGENTFLOW_TOOL_CONNECT_TIMEOUT_MS:5000}
+    read-timeout-ms: ${AGENTFLOW_TOOL_READ_TIMEOUT_MS:10000}
+    remote-read-timeout-ms: ${AGENTFLOW_TOOL_REMOTE_READ_TIMEOUT_MS:60000}
   llm:
-    base-url: https://api.deepseek.com
+    # 默认接入点与模型：可在工作台「模型接入」里改（存库、改完即生效），env 只作为兜底默认值
+    base-url: ${LLM_BASE_URL:https://api.deepseek.com}
     api-key: ${DEEPSEEK_API_KEY:}
-    model: deepseek-v4-flash
+    model: ${LLM_MODEL:deepseek-v4-flash}
+    # 超时：没有超时时上游网关一挂住就会永久占用引擎线程。
+    # connect=建连，read=非流式整段响应；stream-idle=流式期间「多久没有新数据」判定卡死并中断。
+    connect-timeout-ms: ${AGENTFLOW_LLM_CONNECT_TIMEOUT_MS:10000}
+    read-timeout-ms: ${AGENTFLOW_LLM_READ_TIMEOUT_MS:180000}
+    stream-idle-timeout-ms: ${AGENTFLOW_LLM_STREAM_IDLE_TIMEOUT_MS:90000}
+    # 流式响应里是否向服务端请求 token 用量（stream_options.include_usage）。
+    # 默认关闭：部分兼容网关不认识该字段会直接 400；关闭时按文本长度估算并标记为估算值。
+    stream-usage: ${AGENTFLOW_LLM_STREAM_USAGE:false}
+    # 单价（元/百万 token），用于把 token 折算成金额；默认 0 = 不显示金额，只显示 token。
+    # 不内置模型价目表：各家价格会变、网关常有折扣，写死的数字只会给出看似精确的错误结论。
+    price:
+      input: ${AGENTFLOW_LLM_PRICE_INPUT:0}
+      output: ${AGENTFLOW_LLM_PRICE_OUTPUT:0}
+    # 调用埋点保留条数上限（工作台 → 效能与成本 面板的数据）
+    usage-max: ${AGENTFLOW_LLM_USAGE_MAX:20000}
     proxy:
       host: ${LLM_PROXY_HOST:}
       port: ${LLM_PROXY_PORT:0}
@@ -84,6 +123,29 @@ agentflow:
     chunk-overlap: ${AGENTFLOW_KB_CHUNK_OVERLAP:80}
     # 检索返回的命中分块数
     top-k: ${AGENTFLOW_KB_TOP_K:5}
+    # 向量检索（可选）：OpenAI 兼容 /v1/embeddings 接口。配置后检索自动切「向量+关键词」混合排序，
+    # 不配置则保持纯关键词模式。DeepSeek 无 embedding 接口，需另配（任意兼容网关或本地 Ollama）。
+    # 配好后在 工作台 → 知识库 点「重建索引」为存量文档补向量；换模型时重建会自动清空旧向量。
+    embed-url: ${AGENTFLOW_EMBED_URL:}
+    embed-model: ${AGENTFLOW_EMBED_MODEL:}
+    embed-key: ${AGENTFLOW_EMBED_KEY:}
+  alarm:
+    # 告警自动值守：监控平台 webhook 打到 POST /api/hooks/alarm，自动排查并推送结论
+    enabled: ${AGENTFLOW_ALARM_ENABLED:true}
+    # 共享令牌：这是个能触发真实排查与推送的端点，暴露到内网以外时务必配置
+    # （请求头 X-AgentFlow-Token，或 URL 上的 ?token=）。留空则不校验。
+    token: ${AGENTFLOW_ALARM_TOKEN:}
+    # 单次排查的超时（毫秒），超时按当前进度收尾并推送
+    timeout-ms: ${AGENTFLOW_ALARM_TIMEOUT_MS:180000}
+    # 去重窗口（秒）：同一告警（同名+同服务+同链路+同状态）在此窗口内只排查一次，防告警风暴
+    dedup-seconds: ${AGENTFLOW_ALARM_DEDUP_SECONDS:600}
+    # 同时进行的排查数上限（超出进队列，队列满则拒绝并落库）
+    max-concurrent: ${AGENTFLOW_ALARM_MAX_CONCURRENT:2}
+    # 排查记录保留条数上限
+    max-records: ${AGENTFLOW_ALARM_MAX_RECORDS:1000}
+    # 自定义排查指令模板，可用占位符 {traceId} {service} {alertName} {severity} {message} {title}；
+    # 留空则按「有链路→有服务→都没有」自动选择内置指令
+    command: ${AGENTFLOW_ALARM_COMMAND:}
   schedule:
     morning-report:
       # 自动晨报机器人：定时生成昨日日报并推送（需配置 GITLAB_TOKEN；推送需配置 Webhook）

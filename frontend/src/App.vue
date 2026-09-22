@@ -54,7 +54,7 @@
       </div>
 
       <!-- 工作台入口：左栏底部，跟随侧栏一同收起/展开（收起时只剩图标） -->
-      <button class="rail-wb" type="button" title="工作台：链路分析 / 数据库 / GitLab / 效能 / 晨报 / 工具 / 模型" @click="openWorkbench">
+      <button class="rail-wb" type="button" title="工作台：可观测 / 工具与自动化 / 外部接入 / 知识与记忆 / 模型与成本" @click="openWorkbench">
         <span class="rail-wb-ico" aria-hidden="true">☰</span>
         <span v-show="railOpen" class="rail-wb-text">工作台</span>
       </button>
@@ -94,7 +94,7 @@
             @click="scrollToRun(m.id)"
             @keydown.enter="scrollToRun(m.id)"
           >
-            <i class="mm-line" :class="m.cls" :style="{ width: lineWidth(m) + 'px' }"></i>
+            <i class="mm-line" :class="m.cls" :style="{ width: m.width + 'px' }"></i>
             <div class="mm-pop">
               <div class="rail-cmd">{{ m.cmd }}</div>
               <div class="rail-meta">
@@ -145,7 +145,7 @@
 </template>
 
 <script setup>
-import { nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import AgentRun from './components/AgentRun.vue'
 import Composer from './components/Composer.vue'
 import ModelPicker from './components/ModelPicker.vue'
@@ -162,16 +162,17 @@ const prefill = ref({ command: '', nonce: 0 })
 const railOpen = ref(typeof window === 'undefined' || window.innerWidth > 900)
 const activeId = ref('')
 const activeMsgId = ref('')
-const msgMarks = ref([])
 const msgHover = ref('')
+/* 聊天区可视高度：横线间距按它算，由 ResizeObserver 维护（窗口缩放、侧栏收起都涵盖） */
+const railHeight = ref(0)
 const workbenchOpen = ref(false)
-const workbenchTab = ref('trace')
+const workbenchTab = ref('obs')
 const dbProfiles = ref([])
 const dbActive = ref('')
 
-/* 左下角「工作台」入口：打开窗口弹窗，默认展示链路分析 */
+/* 左下角「工作台」入口：打开窗口弹窗，默认展示可观测分组 */
 function openWorkbench() {
-  workbenchTab.value = 'trace'
+  workbenchTab.value = 'obs'
   workbenchOpen.value = true
 }
 
@@ -247,67 +248,78 @@ function toggleRail() {
   railOpen.value = !railOpen.value
 }
 
-/* 消息导航竖条：横线固定间距聚拢居中（不随滚动位置映射），悬停波浪放大 */
-function updateMsgMarks() {
-  const sc = scrollEl.value
-  if (!sc || !runs.value.length) {
-    msgMarks.value = []
-    return
-  }
-  const railH = sc.clientHeight
+/* 消息导航竖条：横线固定间距聚拢居中（不随滚动位置映射），悬停波浪放大。
+   做成 computed 而不是命令式重建：悬停只需重算宽度，不必整表重建；
+   宽度也在算子里一次算好——原来由模板对每个 mark 回头 findIndex，是 O(n²)。 */
+const msgMarks = computed(() => {
   const n = runs.value.length
+  const railH = railHeight.value
+  if (!n || !railH) return []
   const spacing = n > 1 ? Math.max(4, Math.min(12, (railH - 20) / (n - 1))) : 0
   const startY = Math.max(6, (railH - (n - 1) * spacing) / 2)
-  msgMarks.value = runs.value.map((run, i) => ({
-    id: run.id,
-    idx: i,
-    top: Math.round(startY + i * spacing),
-    cmd: run.command,
-    summary: run.final.summary,
-    state: run.status?.text || (run.final.visible ? '完成' : '进行中'),
-    cls: run.status?.cls || (run.final.visible ? 'is-done' : ''),
-    done: run.final.visible || !!run.status?.text,
-  }))
-  updateActive()
+  const hoverIdx = msgHover.value === '' ? -1 : runs.value.findIndex((r) => r.id === msgHover.value)
+  return runs.value.map((run, i) => {
+    const base = run.id === activeMsgId.value ? 10 : 7
+    let width = base
+    if (hoverIdx >= 0) {
+      const d = Math.abs(hoverIdx - i)
+      width = d === 0 ? 18 : d === 1 ? 14 : d === 2 ? 11 : base
+    }
+    return {
+      id: run.id,
+      top: Math.round(startY + i * spacing),
+      cmd: run.command,
+      summary: run.final.summary,
+      state: run.status?.text || (run.final.visible ? '完成' : '进行中'),
+      cls: run.status?.cls || (run.final.visible ? 'is-done' : ''),
+      width,
+    }
+  })
+})
+
+/* run id → 消息元素缓存：滚动每帧都要定位，不能每帧对每条消息做一次 querySelector */
+let turnEls = new Map()
+/* 观察聊天区高度变化，卸载时断开 */
+let railObserver = null
+
+function refreshTurnEls() {
+  const sc = scrollEl.value
+  if (!sc) return
+  const next = new Map()
+  sc.querySelectorAll('[data-run-id]').forEach((el) => next.set(el.dataset.runId, el))
+  turnEls = next
 }
 
-/* 波浪宽度：悬停的横线最长，相邻按距离衰减（Dock 放大效果），活动消息保底加长 */
-function lineWidth(m) {
-  const base = m.id === activeMsgId.value ? 10 : 7
-  const h = msgHover.value
-  if (!h) return base
-  const hi = msgMarks.value.findIndex((x) => x.id === h)
-  if (hi < 0) return base
-  const d = Math.abs(hi - m.idx)
-  if (d === 0) return 18
-  if (d === 1) return 14
-  if (d === 2) return 11
-  return base
-}
-
-/* 当前阅读位置：视口上 1/3 内最后一条 */
+/* 当前阅读位置：视口上 40% 内最后一条。容器 rect 每帧只读一次，元素走缓存 */
 function updateActive() {
   const sc = scrollEl.value
   if (!sc) return
+  if (turnEls.size !== runs.value.length) refreshTurnEls()
+  const containerTop = sc.getBoundingClientRect().top
+  const base = sc.scrollTop
+  const limit = base + sc.clientHeight * 0.4
   let active = null
-  runs.value.forEach((run) => {
-    const el = sc.querySelector(`[data-run-id="${run.id}"]`)
-    if (!el) return
-    const top = el.getBoundingClientRect().top - sc.getBoundingClientRect().top + sc.scrollTop
-    if (top >= sc.scrollTop - 8 && top < sc.scrollTop + sc.clientHeight * 0.4) active = run.id
-  })
+  for (const run of runs.value) {
+    const el = turnEls.get(String(run.id))
+    if (!el) continue
+    const top = el.getBoundingClientRect().top - containerTop + base
+    if (top >= base - 8 && top < limit) active = run.id
+  }
   if (active) activeMsgId.value = active
 }
 
-let mmRaf = 0
+/* 滚动高亮：60ms 时间节流。
+   原先用 requestAnimationFrame 做「一帧最多一次」，但闩锁只在回调里清零——一旦 rAF 不触发
+   （标签页被遮挡、嵌入式 webview 等场景确实会挂起），闩锁就被永久占住，之后所有滚动都不再更新高亮。
+   时间节流没有这个隐患；元素已缓存，单次重算只有几次 rect 读取。 */
+let lastActiveAt = 0
 function onChatScroll() {
   // 滚动会重算横线位置（鼠标不动横线也会移走），悬停态一并失效
   msgHover.value = ''
-  if (mmRaf) return
-  mmRaf = requestAnimationFrame(() => {
-    mmRaf = 0
-    updateActive()
-  })
+  const now = Date.now()
+  if (now - lastActiveAt < 60) return
+  lastActiveAt = now
+  updateActive()
 }
 
 /* 点击横线滚动定位到那条消息 */
@@ -341,7 +353,8 @@ async function openSessionAtBottom(id) {
     await nextTick()
     const sc = scrollEl.value
     if (sc) sc.scrollTo({ top: sc.scrollHeight, behavior: 'instant' })
-    updateMsgMarks()
+    refreshTurnEls()
+    updateActive()
   } finally {
     suppressAutoScroll = false
   }
@@ -366,18 +379,25 @@ function confirmClear() {
   }
 }
 
-/* 新一轮开始、步骤增加或汇总出现时，滚动到底部跟随最新进展，并刷新消息导航条；
-   加载更早消息属于向上补历史，不触发跟随（由 onLoadEarlier 自行保持滚动位置） */
+/* 加载更早消息 / 切换对话期间抑制自动跟随，由调用方自行控制滚动位置 */
 let suppressAutoScroll = false
-watch(
-  () => runs.value.map((r) => `${r.steps.length}-${r.final.visible ? 1 : 0}`).join(','),
-  async () => {
-    await nextTick()
-    if (suppressAutoScroll) return
-    if (scrollEl.value) scrollEl.value.scrollTop = scrollEl.value.scrollHeight
-    updateMsgMarks()
-  }
+
+/* 新一轮开始、步骤增加或汇总出现时，滚动到底部跟随最新进展；
+   加载更早消息属于向上补历史，不触发跟随（由 onLoadEarlier 自行保持滚动位置）。
+
+   监听的是一个单调递增的标量（步数 + 完成标志之和）：原来把整个 runs 映射成字符串再 join，
+   每次求值都要新建数组和字符串。递减不会发生，所以求和与逐项比较等价。 */
+const progressSignal = computed(() =>
+  runs.value.reduce((n, r) => n + (r.steps ? r.steps.length : 0) + (r.final.visible ? 1 : 0), 0)
 )
+
+watch(progressSignal, async () => {
+  await nextTick()
+  refreshTurnEls()
+  if (suppressAutoScroll) return
+  if (scrollEl.value) scrollEl.value.scrollTop = scrollEl.value.scrollHeight
+  updateActive()
+})
 
 /* 加载更早的消息：记录当前滚动位置，插入上一页后锚回原位，视觉上不跳动
    （chat-main 是 smooth 滚动，这里必须 instant，否则锚点会滑行动画跑偏） */
@@ -390,22 +410,19 @@ async function onLoadEarlier() {
     await loadEarlier()
     await nextTick()
     if (sc) sc.scrollTo({ top: prevTop + (sc.scrollHeight - prevHeight), behavior: 'instant' })
-    updateMsgMarks()
+    refreshTurnEls()
   } finally {
     suppressAutoScroll = false
   }
 }
 
-/* 视口尺寸变化时重算横线位置 */
-if (typeof window !== 'undefined') {
-  window.addEventListener('resize', () => updateMsgMarks())
-}
+/* 每轮对话结束后刷新左侧对话列表（新对话首条消息后出现）。
+   只在完成数增加时刷新：切换对话会让计数重置，不该顺带多发一次列表请求。 */
+const finishedCount = computed(() => runs.value.reduce((n, r) => n + (r.final.visible ? 1 : 0), 0))
 
-/* 每轮对话结束后刷新左侧对话列表（新对话首条消息后出现） */
-watch(
-  () => runs.value.map((r) => r.final.visible ? 1 : 0).join(','),
-  () => { loadSessions() }
-)
+watch(finishedCount, (now, prev) => {
+  if (now > prev) loadSessions()
+})
 
 /* 顶栏模型徽标：随「模型接入」配置变化刷新 */
 async function loadLlmInfo() {
@@ -426,6 +443,15 @@ onMounted(async () => {
   document.addEventListener('mousemove', onGlobalMouseMove)
   // 模型接入面板里的增删改/切换会广播该事件，顶栏徽标即时刷新
   window.addEventListener('af-llm-changed', loadLlmInfo)
+  // 横线间距依赖聊天区可视高度：观察元素本身，窗口缩放与侧栏收起都涵盖，
+  // 也就不需要再挂一个永不摘除的 window resize 监听
+  if (scrollEl.value && typeof ResizeObserver !== 'undefined') {
+    railHeight.value = scrollEl.value.clientHeight
+    railObserver = new ResizeObserver(() => {
+      if (scrollEl.value) railHeight.value = scrollEl.value.clientHeight
+    })
+    railObserver.observe(scrollEl.value)
+  }
   loadDbMeta()
   loadLlmInfo()
   // 恢复上次的对话：存在则整段回放，否则落到新对话
@@ -433,8 +459,6 @@ onMounted(async () => {
   const last = localStorage.getItem('af-session-id') || ''
   if (last && history.value.some((s) => s.id === last)) {
     await openSessionAtBottom(last)
-    await nextTick()
-    updateMsgMarks()
   } else if (!last) {
     newSession()
   }
@@ -446,5 +470,7 @@ onMounted(async () => {
 onUnmounted(() => {
   document.removeEventListener('mousemove', onGlobalMouseMove)
   window.removeEventListener('af-llm-changed', loadLlmInfo)
+  railObserver?.disconnect()
+  railObserver = null
 })
 </script>

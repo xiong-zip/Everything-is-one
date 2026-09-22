@@ -62,6 +62,9 @@
             <div class="ta-detail-actions">
               <button class="btn btn-ghost" type="button" @click="copyTrace">复制 ID</button>
               <button class="btn btn-ghost" type="button" @click="$emit('run', current.traceId)">再次分析</button>
+              <button class="btn btn-primary" type="button" :disabled="reportLoading" @click="makeReport">
+                {{ reportLoading ? '报告生成中…' : '📄 故障报告' }}
+              </button>
               <button class="btn btn-ghost btn-danger" type="button" @click="remove(current)">删除</button>
             </div>
           </div>
@@ -83,6 +86,20 @@
 
           <div class="ta-digest-label">分析摘要</div>
           <pre class="ta-digest">{{ current.digest || '（无摘要）' }}</pre>
+
+          <!-- 一键故障报告：聚合链路/变更/K8s/告警时间线，LLM 归纳或模板拼装 -->
+          <template v-if="report">
+            <div class="ta-digest-label ta-report-label">
+              故障报告 <span class="ta-report-engine">{{ report.engine === 'llm' ? '（模型归纳）' : '（模板拼装，未配置 LLM）' }}</span>
+              <span class="ta-report-ops">
+                <button class="btn btn-ghost" type="button" @click="copyReport">复制</button>
+                <button class="btn btn-ghost" type="button" @click="downloadReport">下载 .md</button>
+                <button class="btn btn-ghost" type="button" @click="report = null">收起</button>
+              </span>
+            </div>
+            <pre class="ta-digest ta-report">{{ report.markdown }}</pre>
+          </template>
+          <div v-else-if="reportError" class="td-message err">{{ reportError }}</div>
         </template>
       </div>
     </div>
@@ -100,7 +117,8 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { api, toastError } from '../api/client'
 
 defineEmits(['run'])
 
@@ -110,6 +128,9 @@ const keyword = ref('')
 const loading = ref(false)
 const total = ref(0)
 const current = ref(null)
+const report = ref(null)
+const reportLoading = ref(false)
+const reportError = ref('')
 let timer = null
 
 /* 底部条只展示前 4 个高频指纹，避免挤占空间 */
@@ -120,19 +141,18 @@ async function load() {
   try {
     const qs = new URLSearchParams({ limit: '200' })
     if (keyword.value.trim()) qs.set('keyword', keyword.value.trim())
-    const [listRes, statRes] = await Promise.all([
-      fetch(`/api/signoz/analyses?${qs}`),
-      fetch('/api/signoz/stats'),
+    const [data, statsData] = await Promise.all([
+      api.get(`/api/signoz/analyses?${qs}`),
+      api.get('/api/signoz/stats'),
     ])
-    if (listRes.ok) {
-      const data = await listRes.json()
-      items.value = data.items || []
-      total.value = data.total || 0
-      // 选中项按 id 重新定位，避免刷新后详情与列表不一致
-      if (current.value) current.value = items.value.find((i) => i.id === current.value.id) || null
-    }
-    if (statRes.ok) stats.value = await statRes.json()
-  } catch { /* 后端不可用时静默降级 */ } finally {
+    items.value = data.items || []
+    total.value = data.total || 0
+    // 选中项按 id 重新定位，避免刷新后详情与列表不一致
+    if (current.value) current.value = items.value.find((i) => i.id === current.value.id) || null
+    stats.value = statsData
+  } catch (err) {
+    toastError(err)
+  } finally {
     loading.value = false
   }
 }
@@ -142,6 +162,9 @@ watch(keyword, () => {
   clearTimeout(timer)
   timer = setTimeout(load, 300)
 })
+
+/* 面板可能在防抖等待期间被切走或关闭，定时器必须摘掉，否则会对已卸载的组件发请求 */
+onBeforeUnmount(() => clearTimeout(timer))
 
 async function select(r) {
   try {
@@ -171,6 +194,41 @@ async function clearAll() {
 async function copyTrace() {
   try { await navigator.clipboard.writeText(current.value.traceId) } catch { /* 静默 */ }
 }
+
+/* ---------- 一键故障报告 ---------- */
+
+async function makeReport() {
+  if (!current.value || reportLoading.value) return
+  reportLoading.value = true
+  report.value = null
+  reportError.value = ''
+  try {
+    report.value = await api.post('/api/signoz/report', { traceId: current.value.traceId })
+  } catch (err) {
+    reportError.value = err.message || '报告生成失败'
+  } finally {
+    reportLoading.value = false
+  }
+}
+
+async function copyReport() {
+  try { await navigator.clipboard.writeText(report.value.markdown) } catch { /* 静默 */ }
+}
+
+function downloadReport() {
+  const blob = new Blob([report.value.markdown], { type: 'text/markdown;charset=utf-8' })
+  const a = document.createElement('a')
+  a.href = URL.createObjectURL(blob)
+  a.download = `故障报告-${report.value.traceId.slice(0, 8)}.md`
+  a.click()
+  URL.revokeObjectURL(a.href)
+}
+
+/* 切换记录时收起上一条的报告与报错 */
+watch(current, () => {
+  report.value = null
+  reportError.value = ''
+})
 
 function short(id) {
   return id && id.length > 16 ? id.slice(0, 16) + '…' : id

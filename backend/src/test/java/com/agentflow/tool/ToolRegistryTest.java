@@ -61,4 +61,51 @@ class ToolRegistryTest {
         ToolRegistry registry = new ToolRegistry(java.util.List.of());
         assertNull(registry.execute("nope", Map.of(), ""));
     }
+
+    /** description()/argsHint() 允许实现查库；提示词清单必须缓存，不能在每轮规划时重新问一遍 */
+    @Test
+    void promptBlockIsCachedUntilRegistryChanges() {
+        CountingTool tool = new CountingTool();
+        ToolRegistry registry = new ToolRegistry(java.util.List.of(tool));
+        int afterConstruct = tool.describeCalls;
+
+        for (int i = 0; i < 5; i++) {
+            assertTrue(registry.describeForPrompt().contains("counting.tool"));
+        }
+        assertEquals(afterConstruct, tool.describeCalls, "读取提示词不应再次调用工具");
+
+        registry.register(new EchoTool());
+        assertTrue(registry.describeForPrompt().contains("counting.tool"));
+        assertTrue(registry.describeForPrompt().contains("test.echo"));
+        assertEquals(afterConstruct + 1, tool.describeCalls, "注册变更后应重建一次缓存");
+
+        registry.unregister("test.echo");
+        assertFalse(registry.describeForPrompt().contains("test.echo"));
+    }
+
+    /** 记录 description() 被调用次数，用来验证提示词缓存确实生效 */
+    private static class CountingTool implements Tool {
+        int describeCalls;
+
+        @Override
+        public String name() {
+            return "counting.tool";
+        }
+
+        @Override
+        public String description() {
+            describeCalls++;
+            return "计数工具";
+        }
+
+        @Override
+        public String argsHint() {
+            return "{}";
+        }
+
+        @Override
+        public ToolResult execute(Map<String, Object> args, String userCommand) {
+            return ToolResult.note("counting");
+        }
+    }
 }

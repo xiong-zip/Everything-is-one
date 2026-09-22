@@ -64,6 +64,7 @@
 
 <script setup>
 import { onMounted, ref } from 'vue'
+import { api, toastError } from '../api/client'
 
 const items = ref([])
 const loading = ref(false)
@@ -75,13 +76,12 @@ const message = ref(null)
 async function load() {
   loading.value = true
   try {
-    const res = await fetch('/api/memory')
-    if (res.ok) {
-      const data = await res.json()
-      items.value = data.items || []
-      autoExtract.value = data.autoExtract !== false
-    }
-  } catch { /* 静默 */ } finally {
+    const data = await api.get('/api/memory')
+    items.value = data.items || []
+    autoExtract.value = data.autoExtract !== false
+  } catch (err) {
+    toastError(err)
+  } finally {
     loading.value = false
   }
 }

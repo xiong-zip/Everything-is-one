@@ -49,7 +49,7 @@
     <!-- 回答：write 步流式生成时实时渲染，完成后为最终产出；直接铺在对话流里。
          候选澄清回合不渲染回答区——候选卡本身就是该回合的终点，点选后开新回合 -->
     <div v-if="answerText || (run.final.visible && !run.clarify)" class="z-answer" :class="{ streaming: !run.final.visible }">
-      <ReportText v-if="answerText" :text="answerText" />
+      <ReportText v-if="answerText" :text="answerText" :streaming="!run.final.visible" />
       <span v-if="!run.final.visible && answerText" class="z-answer-cursor" aria-hidden="true"></span>
       <div v-if="run.final.visible && !answerText" class="z-answer-empty">
         {{ run.final.cancelled ? '停止时还没有产出内容，已完成的步骤可在上方回看' : '本次没有产出文本内容' }}

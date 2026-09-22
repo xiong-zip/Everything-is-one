@@ -5,6 +5,7 @@ import com.agentflow.kb.KbChunker;
 import com.agentflow.kb.KbSearchTool;
 import com.agentflow.kb.KbStore;
 import com.agentflow.kb.KbTextExtractor;
+import com.agentflow.kb.KbVectorService;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -35,12 +36,14 @@ public class KbController {
     private final KbStore store;
     private final KbTextExtractor extractor;
     private final KbSearchTool searchTool;
+    private final KbVectorService vectorService;
     private final Path filesDir;
     private final int maxFiles;
     private final int chunkChars;
     private final int chunkOverlap;
 
     public KbController(KbStore store, KbTextExtractor extractor, KbSearchTool searchTool,
+                        KbVectorService vectorService,
                         @Value("${agentflow.kb.files-path:./data/kb-files}") String filesPath,
                         @Value("${agentflow.kb.max-files:200}") int maxFiles,
                         @Value("${agentflow.kb.chunk-chars:600}") int chunkChars,
@@ -48,6 +51,7 @@ public class KbController {
         this.store = store;
         this.extractor = extractor;
         this.searchTool = searchTool;
+        this.vectorService = vectorService;
         this.filesDir = Path.of(StoragePaths.resolve(filesPath));
         this.maxFiles = maxFiles;
         this.chunkChars = chunkChars;
@@ -98,6 +102,11 @@ public class KbController {
             long id = store.saveFile(filename, storedName, file.getSize(), text.length(), chunks);
             if (id <= 0) {
                 throw new IllegalArgumentException("入库失败，请重试");
+            }
+            // 向量索引异步补齐：上传主流程不等它，失败可由「重建索引」兜底
+            if (vectorService.active()) {
+                final long fileId = id;
+                java.util.concurrent.CompletableFuture.runAsync(() -> vectorService.indexFile(fileId));
             }
             Map<String, Object> out = new LinkedHashMap<>();
             out.put("ok", "saved");
@@ -181,6 +190,18 @@ public class KbController {
         m.put("chunkCount", f.chunkCount());
         m.put("createdAt", f.createdAt());
         return m;
+    }
+
+    /** 向量检索状态：是否启用、模型、已索引块数（面板提示与「重建索引」按钮依据） */
+    @GetMapping("/vector")
+    public Map<String, Object> vectorStatus() {
+        return vectorService.status();
+    }
+
+    /** 重建向量索引：补齐缺失向量；换过嵌入模型时先清空旧向量再重算 */
+    @PostMapping("/vector/rebuild")
+    public Map<String, Object> rebuildVector() {
+        return vectorService.backfill();
     }
 
     private static String humanSize(long bytes) {

@@ -31,3 +31,6 @@ data/
 
 # 单测经 StoragePaths 锚定项目根时产生的临时文件
 /target/
+
+# IDE 编译输出（IntelliJ 默认输出目录；实测已有 138MB，不忽略会被整包提交）
+out/

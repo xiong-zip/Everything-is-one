@@ -82,6 +82,7 @@
 
 <script setup>
 import { onMounted, ref } from 'vue'
+import { api, toastError } from '../api/client'
 
 const items = ref([])
 const loading = ref(false)
@@ -95,13 +96,12 @@ const form = ref({ service: '', keyword: '', projectPath: '' })
 async function load() {
   loading.value = true
   try {
-    const res = await fetch('/api/servicemap')
-    if (res.ok) {
-      const data = await res.json()
-      items.value = data.items || []
-      gitlabConfigured.value = data.gitlabConfigured !== false
-    }
-  } catch { /* 静默 */ } finally {
+    const data = await api.get('/api/servicemap')
+    items.value = data.items || []
+    gitlabConfigured.value = data.gitlabConfigured !== false
+  } catch (err) {
+    toastError(err)
+  } finally {
     loading.value = false
   }
 }

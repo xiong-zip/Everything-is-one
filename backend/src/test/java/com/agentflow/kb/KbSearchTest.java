@@ -74,7 +74,8 @@ class KbSearchTest {
     void toolIsReadOnlyWithModes() {
         KbStore store = new KbStore("./target/test-kb-meta.db");
         store.init();
-        KbSearchTool tool = new KbSearchTool(store, 600, 80, 5);
+        // vectors 传 null：等价于未配置嵌入，检索保持关键词模式
+        KbSearchTool tool = new KbSearchTool(store, null, 600, 80, 5);
         assertEquals("kb.query", tool.name());
         assertFalse(tool.requiresConfirm());
         assertTrue(tool.argsHint().contains("search"));

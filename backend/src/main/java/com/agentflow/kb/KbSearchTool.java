@@ -19,11 +19,14 @@ import java.util.regex.Pattern;
 
 /**
  * 个人知识库检索工具（kb.query，只读）：三模式——
- * search（默认，关键词打分取 Top-K 分块，供基于知识库作答）、list（文件清单）、read（读某文件全部分块）。
+ * search（默认，取 Top-K 分块，供基于知识库作答）、list（文件清单）、read（读某文件全部分块）。
  *
- * 无 embedding API（DeepSeek 仅对话接口），检索用内存关键词打分：
- * 查询切词（中文 2-gram + 西文小写词），块得分 = Σ 词频 × log(1 + 总块数/含词块数)（罕见词权重高）。
- * 个人规模（几千块）全量打分毫秒级，无需倒排索引。
+ * 打分双模式（自动选择，无需配置切换）：
+ * - 关键词模式（默认）：查询切词（中文 2-gram + 西文小写词），
+ *   块得分 = Σ 词频 × log(1 + 总块数/含词块数)（罕见词权重高）。
+ * - 混合模式（.env 配置嵌入模型后自动启用）：余弦相似度（语义）与关键词得分加权融合，
+ *   语义命中但字面不同的块（口语提问 vs 术语文档）也能排上来，精确标识符仍靠关键词保底。
+ * 嵌入调用失败时单次自动退回关键词模式，检索永不因向量服务不可用而中断。
  */
 @Component
 public class KbSearchTool implements Tool {
@@ -37,15 +40,17 @@ public class KbSearchTool implements Tool {
     private static final Pattern LATIN_WORD = Pattern.compile("[a-z0-9][a-z0-9_.-]{1,}");
 
     private final KbStore store;
+    private final KbVectorService vectors;
     private final int chunkChars;
     private final int chunkOverlap;
     private final int topK;
 
-    public KbSearchTool(KbStore store,
+    public KbSearchTool(KbStore store, KbVectorService vectors,
                         @Value("${agentflow.kb.chunk-chars:600}") int chunkChars,
                         @Value("${agentflow.kb.chunk-overlap:80}") int chunkOverlap,
                         @Value("${agentflow.kb.top-k:5}") int topK) {
         this.store = store;
+        this.vectors = vectors;
         this.chunkChars = Math.max(100, chunkChars);
         this.chunkOverlap = Math.max(0, chunkOverlap);
         this.topK = Math.max(1, topK);
@@ -155,35 +160,57 @@ public class KbSearchTool implements Tool {
         if (q == null || q.isBlank()) {
             return ToolResult.note("search 模式需要 query 参数（完整自然语言问题）");
         }
-        List<KbStore.KbChunk> all = store.allChunks();
+        List<KbStore.ChunkRow> all = store.allChunkRows();
         List<String> tokens = tokenize(q);
-        if (tokens.isEmpty()) {
+
+        // 查询向量：嵌入未配置/未建索引/调用失败时为 null，检索自动保持关键词模式；
+        // 查询全是停用词时关键词模式已无路可走，向量模式仍可按语义检索
+        float[] queryVec = vectors != null ? vectors.embedQuery(q) : null;
+        if (tokens.isEmpty() && queryVec == null) {
             return ToolResult.note("检索词全是停用词，换个更具体的问题试试");
         }
 
-        // 逆文档频率：含某词的块数越少权重越高
+        // 关键词打分（词频 × 逆文档频率），与向量得分并行计算后融合
         Map<String, Integer> df = new HashMap<>();
         List<Map<String, Integer>> tfs = new ArrayList<>();
-        for (KbStore.KbChunk c : all) {
+        for (KbStore.ChunkRow c : all) {
             Map<String, Integer> tf = termFreq(c.content(), tokens);
             tfs.add(tf);
             for (String t : tf.keySet()) {
                 df.merge(t, 1, Integer::sum);
             }
         }
-        record Hit(KbStore.KbChunk chunk, double score) {
-        }
-        List<Hit> hits = new ArrayList<>();
+        double[] kwScore = new double[all.size()];
+        double maxKw = 0;
         for (int i = 0; i < all.size(); i++) {
-            if (tfs.get(i).isEmpty()) {
-                continue;
-            }
             double score = 0;
             for (Map.Entry<String, Integer> e : tfs.get(i).entrySet()) {
                 double idf = Math.log(1.0 + (double) all.size() / df.get(e.getKey()));
                 score += e.getValue() * idf;
             }
-            hits.add(new Hit(all.get(i), score));
+            kwScore[i] = score;
+            maxKw = Math.max(maxKw, score);
+        }
+
+        boolean vectorUsed = queryVec != null;
+        record Hit(KbStore.ChunkRow chunk, double score) {
+        }
+        List<Hit> hits = new ArrayList<>();
+        for (int i = 0; i < all.size(); i++) {
+            double finalScore;
+            if (vectorUsed) {
+                double cos = KbVectors.cosine(queryVec, KbVectors.decode(all.get(i).embedding()));
+                if (kwScore[i] <= 0 && cos < 0.2) {
+                    continue; // 语义与字面都不沾边，不进候选
+                }
+                finalScore = hybridScore(cos, kwScore[i], maxKw);
+            } else {
+                if (kwScore[i] <= 0) {
+                    continue;
+                }
+                finalScore = kwScore[i];
+            }
+            hits.add(new Hit(all.get(i), finalScore));
         }
         hits.sort(Comparator.comparingDouble(Hit::score).reversed());
 
@@ -193,10 +220,12 @@ public class KbSearchTool implements Tool {
         }
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("query", q);
+        result.put("ranker", vectorUsed ? "vector-hybrid" : "keyword");
         result.put("matchCount", hits.size());
         List<Map<String, Object>> hitList = new ArrayList<>();
         List<String> lines = new ArrayList<>();
-        lines.add("检索「" + truncateZh(q, 40) + "」· 命中 " + hits.size() + " 块，取前 " + Math.min(topK, hits.size()) + " 块：");
+        lines.add("检索「" + truncateZh(q, 40) + "」· 命中 " + hits.size() + " 块，取前 " + Math.min(topK, hits.size()) + " 块"
+                + (vectorUsed ? "（向量 + 关键词混合排序）" : "（关键词排序）") + "：");
         for (Hit h : hits.subList(0, Math.min(topK, hits.size()))) {
             String fn = fileNames.getOrDefault(h.chunk().fileId(), "文件#" + h.chunk().fileId());
             String excerpt = truncateZh(h.chunk().content(), 300);
@@ -209,8 +238,18 @@ public class KbSearchTool implements Tool {
                 ? "知识库检索无命中（" + files.size() + " 个文件）"
                 : "知识库命中 " + hits.size() + " 块 · 来源 " + hitList.stream()
                         .map(x -> String.valueOf(x.get("file"))).distinct().count() + " 个文件，最相关："
-                        + hitList.get(0).get("file");
+                        + hitList.get(0).get("file") + (vectorUsed ? "（混合排序）" : "");
         return new ToolResult("kb", result, lines, summary);
+    }
+
+    /**
+     * 混合得分：0.65 × 余弦相似度 + 0.35 × 关键词归一分。
+     * 语义权重略高（它解决「口语提问 vs 术语文档」的字面不匹配），
+     * 关键词保底精确匹配（表名、错误码这类语义模型不一定敏感的标识符）。
+     */
+    static double hybridScore(double cosine, double kwScore, double maxKw) {
+        double kwNorm = maxKw > 0 ? kwScore / maxKw : 0;
+        return 0.65 * Math.max(-1, Math.min(1, cosine)) + 0.35 * kwNorm;
     }
 
     /* ---------- 纯函数（单测覆盖） ---------- */

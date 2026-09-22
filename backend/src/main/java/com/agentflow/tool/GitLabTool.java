@@ -14,9 +14,13 @@ import java.time.OffsetDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.temporal.TemporalAdjusters;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.TreeMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -186,11 +190,15 @@ public class GitLabTool implements Tool {
      * 识别不到时间词返回 null。
      */
     public static Window parseWindow(String command) {
+        return parseWindow(command, LocalDate.now());
+    }
+
+    /** 同 {@link #parseWindow(String)}，基准日可注入（测试用） */
+    static Window parseWindow(String command, LocalDate today) {
         if (command == null || command.isBlank()) {
             return null;
         }
         String c = command.trim();
-        LocalDate today = LocalDate.now();
 
         Matcher range = P_RANGE.matcher(c);
         if (range.find()) {
@@ -214,9 +222,15 @@ public class GitLabTool implements Tool {
             int n = Math.min(Integer.parseInt(nDay.group(1)), MAX_WINDOW_DAYS);
             return window(today.minusDays(n - 1L), today, "近" + n + "天");
         }
+        // 「最近一周」是滚动 7 天；「本周/这周」是日历周（周一起）——
+        // 周报写「本周」时把上周五六日算进来会把上个周期的活记到本周
+        if (c.contains("最近一周") || c.contains("近一周") || c.contains("过去一周")) {
+            return window(today.minusDays(6), today, "最近一周");
+        }
         if (c.contains("本周") || c.contains("这周") || c.contains("这一周")
-                || c.contains("最近一周") || c.contains("近一周")) {
-            return window(today.minusDays(6), today, "本周");
+                || c.contains("本星期") || c.contains("这星期")) {
+            LocalDate mon = today.with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY));
+            return window(mon, today, "本周");
         }
         if (c.contains("昨天") || c.contains("昨日")) {
             return window(today.minusDays(1), today.minusDays(1), "昨天");
@@ -301,8 +315,12 @@ public class GitLabTool implements Tool {
                 LocalDate mon = today.with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY)).minusWeeks(1);
                 return window(mon, mon.plusDays(6), "上周");
             }
-            if (d.contains("week") || d.contains("7")) {
-                return window(today.minusDays(6), today, "本周");
+            if (d.contains("week")) {
+                // 与「本周」同口径：日历周（周一起），不是滚动 7 天
+                return window(today.with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY)), today, "本周");
+            }
+            if (d.contains("7")) {
+                return window(today.minusDays(6), today, "最近一周");
             }
             if (d.contains("yesterday")) {
                 return window(today.minusDays(1), today.minusDays(1), "昨天");
@@ -405,15 +423,57 @@ public class GitLabTool implements Tool {
     }
 
     /**
+     * 「我」的身份集合：档案显示名 + 档案邮箱 + 全部已验证副邮箱 + 账户里手工配置的别名。
+     * 本机 git 的作者名/邮箱常与 GitLab 档案不一致（档案=姓名+公司邮箱，git=账号名+个人邮箱），
+     * 只按档案匹配会把真实工作提交整批滤掉，剩下的恰好全是网页端合并 MR 产生的 Merge 提交。
+     */
+    public record AuthorIdentity(Set<String> names, Set<String> emails, Set<String> aliases) {
+
+        public static AuthorIdentity of(String displayName, Set<String> emails, List<String> aliases) {
+            Set<String> names = displayName == null || displayName.isBlank() ? Set.of() : Set.of(displayName);
+            Set<String> als = aliases == null ? Set.of() : new LinkedHashSet<>(aliases);
+            return new AuthorIdentity(lower(names), lower(emails), lower(als));
+        }
+
+        boolean matches(JsonNode commit) {
+            String author = commit.path("author_name").asText("");
+            if (!author.isBlank() && containsMatch(names, author)) {
+                return true;
+            }
+            String email = commit.path("author_email").asText("");
+            if (!email.isBlank() && (containsMatch(emails, email) || containsMatch(aliases, email))) {
+                return true;
+            }
+            // 别名也按作者名匹配（填账号名 xiaoxiong 与填邮箱同等生效）
+            return !author.isBlank() && containsMatch(aliases, author);
+        }
+
+        private static boolean containsMatch(Set<String> set, String value) {
+            return !set.isEmpty() && set.contains(value.toLowerCase(Locale.ROOT));
+        }
+
+        private static Set<String> lower(Set<String> in) {
+            Set<String> out = new LinkedHashSet<>();
+            for (String s : in) {
+                if (s != null && !s.isBlank()) {
+                    out.add(s.toLowerCase(Locale.ROOT));
+                }
+            }
+            return out;
+        }
+    }
+
+    /**
      * 日报/周报素材：时间窗内我在各项目的逐条提交（按项目分组）。
-     * 项目候选来自推送事件（after 过滤 + 分页），提交明细来自仓库 commits 接口并按作者过滤；
+     * 项目候选来自推送事件（after 过滤 + 分页），提交明细来自仓库 commits 接口：
+     * all=true 覆盖全部存活分支（功能分支未合并的提交也在内），按页拉取防 100 条截断，
+     * 按 sha 去重后按作者身份过滤，并剔除 Merge/Revert 同步噪音；
      * 明细过滤为空时回退到推送事件的提交概要。
      */
     private ToolResult listMineCommits(Window w) throws Exception {
         JsonNode me = getJson("/api/v4/user");
         String myName = me.path("name").asText("我");
-        String myEmail = me.path("email").asText("");
-        String commitEmail = me.path("commit_email").asText("");
+        AuthorIdentity identity = buildIdentity(me);
 
         java.time.ZoneId zone = java.time.ZoneId.systemDefault();
         OffsetDateTime since = w.since().atStartOfDay(zone).toOffsetDateTime();
@@ -455,23 +515,24 @@ public class GitLabTool implements Tool {
                 projName = "项目#" + pid;
             }
 
+            List<JsonNode> mine = fetchMyCommits(pid, since, until, identity);
             List<String> titles = new ArrayList<>();
-            try {
-                JsonNode commits = getJson("/api/v4/projects/" + pid + "/repository/commits"
-                        + "?since=" + enc(since.toString()) + "&until=" + enc(until.toString()) + "&per_page=100");
-                for (JsonNode c : commits) {
-                    if (isMine(c, myName, myEmail, commitEmail)) {
-                        titles.add(fmtTime(c.path("created_at").asText("")) + " · " + c.path("title").asText(""));
-                    }
+            for (JsonNode c : mine) {
+                String title = c.path("title").asText("");
+                String line = fmtTime(c.path("created_at").asText("")) + " · " + title;
+                // 提交正文（详细改动说明）一并交给报告模型：只凭标题归纳会让细节失真，
+                // 正文就藏在同一响应的 message 字段里，不需要额外请求
+                String detail = detailOf(title, c.path("message").asText(""));
+                if (!detail.isEmpty()) {
+                    line = line + " ｜ 详情：" + detail;
                 }
-            } catch (Exception ignored) {
-                // 仓库不可访问时走推送事件兜底
+                titles.add(line);
             }
             if (titles.isEmpty()) {
                 for (JsonNode e : en.getValue()) {
                     String title = e.path("push_data").path("commit_title").asText("");
                     int cnt = e.path("push_data").path("commit_count").asInt(1);
-                    if (!title.isBlank()) {
+                    if (!title.isBlank() && !isSyncNoise(title)) {
                         titles.add(fmtTime(e.path("created_at").asText()) + " · " + title
                                 + (cnt > 1 ? "（含 " + cnt + " 个提交）" : ""));
                     }
@@ -487,20 +548,121 @@ public class GitLabTool implements Tool {
 
         String scope = w.scopeZh();
         if (list.isEmpty()) {
-            return ToolResult.note("「" + myName + "」" + scope + "还没有提交记录，无日报/周报素材");
+            String hint = identity.aliases().isEmpty()
+                    ? "；若本机 git 配置的作者名/邮箱与 GitLab 档案不一致，可在「工作台 → GitLab 效能 → 账户」补充提交作者别名"
+                    : "";
+            return ToolResult.note("「" + myName + "」" + scope + "还没有提交记录，无日报/周报素材" + hint);
         }
         return new ToolResult("list", null, list,
                 myName + " " + scope + "共提交 " + totalCommits + " 次，涉及 " + projectCount + " 个项目");
     }
 
-    /** 提交是否出自 token 用户：作者名或提交邮箱任一匹配 */
-    private static boolean isMine(JsonNode commit, String myName, String myEmail, String commitEmail) {
-        String author = commit.path("author_name").asText("");
-        if (!myName.isBlank() && myName.equals(author)) {
-            return true;
+    /** 档案身份 + 已验证副邮箱 + 账户别名，合成一个匹配器 */
+    private AuthorIdentity buildIdentity(JsonNode me) {
+        Set<String> emails = new LinkedHashSet<>();
+        addIfPresent(emails, me.path("email").asText(""));
+        addIfPresent(emails, me.path("commit_email").asText(""));
+        try {
+            for (JsonNode e : getJson("/api/v4/user/emails")) {
+                addIfPresent(emails, e.path("email").asText(""));
+            }
+        } catch (Exception ignored) {
+            // 部分实例/权限下副邮箱接口不可用，档案邮箱仍然生效
         }
-        String email = commit.path("author_email").asText("");
-        return !email.isBlank() && (email.equals(myEmail) || email.equals(commitEmail));
+        return AuthorIdentity.of(me.path("name").asText(""), emails, accountStore.activeAuthors());
+    }
+
+    private static void addIfPresent(Set<String> set, String v) {
+        if (v != null && !v.isBlank()) {
+            set.add(v);
+        }
+    }
+
+    /** 时间窗内我的非同步类提交：all=true 覆盖全部存活分支，分页拉取防截断，按 sha 去重，按时间升序 */
+    List<JsonNode> fetchMyCommits(long projectId, OffsetDateTime since, OffsetDateTime until,
+                                  AuthorIdentity identity) {
+        List<JsonNode> out = new ArrayList<>();
+        Set<String> seen = new HashSet<>();
+        for (int page = 1; page <= 10; page++) {
+            JsonNode commits;
+            try {
+                commits = getJson("/api/v4/projects/" + projectId + "/repository/commits"
+                        + "?since=" + enc(since.toString()) + "&until=" + enc(until.toString())
+                        + "&all=true&per_page=100&page=" + page);
+            } catch (Exception ex) {
+                // 仓库不可访问（已删除/无权限）时交给推送事件兜底
+                break;
+            }
+            if (!commits.isArray() || commits.isEmpty()) {
+                break;
+            }
+            for (JsonNode c : commits) {
+                String sha = c.path("id").asText("");
+                String title = c.path("title").asText("");
+                if (sha.isBlank() || !seen.add(sha) || isSyncNoise(title) || !identity.matches(c)) {
+                    continue;
+                }
+                out.add(c);
+            }
+            if (commits.size() < 100) {
+                break;
+            }
+        }
+        out.sort((a, b) -> {
+            OffsetDateTime ta = parseTime(a.path("created_at").asText(""));
+            OffsetDateTime tb = parseTime(b.path("created_at").asText(""));
+            if (ta == null || tb == null) {
+                return 0;
+            }
+            return ta.compareTo(tb);
+        });
+        return out;
+    }
+
+    /** Merge/Revert 等同步类提交：属于过程噪音，报告素材与统计都应剔除 */
+    static boolean isSyncNoise(String title) {
+        if (title == null) {
+            return false;
+        }
+        String t = title.strip().toLowerCase(Locale.ROOT);
+        return t.startsWith("merge ") || t.startsWith("revert ") || t.startsWith("merge,");
+    }
+
+    /** 提交正文单行摘要的长度上限：够覆盖一次提交的要点罗列，又不至于把周报素材撑爆 */
+    private static final int DETAIL_MAX_CHARS = 150;
+
+    /**
+     * 提交正文（message 去掉标题行）压成一行：剥掉每行的 "-" / "*" 项目符号、以「；」连接、截断到上限。
+     * message 与 title 相同（只有标题）时返回空串。
+     */
+    static String detailOf(String title, String message) {
+        if (message == null || message.isBlank()) {
+            return "";
+        }
+        String body = message.strip();
+        String t = title == null ? "" : title.strip();
+        if (!t.isEmpty() && body.startsWith(t)) {
+            body = body.substring(t.length());
+        } else {
+            // 防御：个别仓库 title 与 message 首行不一致，退化为去掉首行
+            int nl = body.indexOf('\n');
+            body = nl > 0 ? body.substring(nl + 1) : "";
+        }
+        List<String> parts = new ArrayList<>();
+        for (String l : body.split("\n")) {
+            String s = l.strip();
+            while (s.startsWith("-") || s.startsWith("*")) {
+                s = s.substring(1).strip();
+            }
+            if (!s.isEmpty()) {
+                parts.add(s);
+            }
+        }
+        String joined = String.join("；", parts).replaceAll("\\s{2,}", " ");
+        if (joined.length() > DETAIL_MAX_CHARS) {
+            joined = joined.substring(0, DETAIL_MAX_CHARS) + "…";
+        }
+        return joined;
     }
 
     /** "组名 / 项目名" 只保留项目名，报告列表更紧凑 */

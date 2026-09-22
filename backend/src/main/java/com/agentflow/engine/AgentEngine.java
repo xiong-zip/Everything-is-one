@@ -1,6 +1,7 @@
 package com.agentflow.engine;
 
 import com.agentflow.llm.LlmClient;
+import com.agentflow.llm.LlmContext;
 import com.agentflow.model.PlanStep;
 import com.agentflow.model.ToolCall;
 import com.agentflow.tool.GitLabTool;
@@ -27,11 +28,14 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * 通用 Agent 编排引擎：任意自然语言指令 → 意图分析 → 动态规划 → 逐步执行 → 汇总。
@@ -42,19 +46,10 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public class AgentEngine {
 
     private static final Logger log = LoggerFactory.getLogger(AgentEngine.class);
-    private static final long EMITTER_TIMEOUT_MS = 180_000L;
     private static final int MAX_REASON_LINES = 10;
     private static final int MAX_HISTORY_TURNS = 5;
-    private static final int STREAM_FLUSH_CHARS = 16;
-    private static final int MAX_SESSIONS = 500;
-    /** confirm 模式等待用户确认计划的最长时间 */
-    private static final long CONFIRM_TIMEOUT_MIN = 10;
-    /** ReAct 自主循环的步数上限 */
-    private static final int MAX_REACT_STEPS = 8;
-    /** 混合模式：计划受阻转入 ReAct 后的额外步数预算（比纯 react 收紧，避免失控） */
-    private static final int MAX_HYBRID_REACT_STEPS = 4;
-    /** 同一并行分组内的最大并发数 */
-    private static final int MAX_PARALLEL = 3;
+    /** 工具结果喂给 LLM 的素材长度上限：容纳带提交正文详情的周报素材 */
+    private static final int TOOL_MATERIAL_MAX_CHARS = 8000;
 
     private static final String PLAN_SYSTEM_TEMPLATE =
             "你是 AgentFlow 的意图分析与任务规划器。请分析用户指令并拆解成 2~5 个有序、可执行的子任务，输出一个 JSON 对象：" +
@@ -112,14 +107,46 @@ public class AgentEngine {
     private final String reportDept;
     private final String agentMode;
     private final boolean memoryEnabled;
+    private final int streamFlushChars;
+    /** SSE 连接的最长存活时间（毫秒） */
+    private final long emitterTimeoutMs;
+    /** 内存里同时保留的会话数上限，超出按完成情况淘汰 */
+    private final int maxSessions;
+    /** confirm 模式等待用户确认计划的最长时间（分钟） */
+    private final long confirmTimeoutMin;
+    /** ReAct 自主循环的步数上限 */
+    private final int maxReactSteps;
+    /** 混合模式：计划受阻转入 ReAct 后的额外步数预算（比纯 react 收紧，避免失控） */
+    private final int maxHybridReactSteps;
+    /** 同一并行分组内的最大并发数 */
+    private final int maxParallel;
     private final ObjectMapper mapper = new ObjectMapper();
-    private final ExecutorService executor = Executors.newCachedThreadPool();
+    /** 运行执行池：有界 + 命名。无界池在任务突发时会无限建线程，且没有任何背压。 */
+    private final ExecutorService executor;
+    /**
+     * 并行步骤池：必须与运行池分开。运行池有界后，一次 run 会占住一个线程再等自己的
+     * 并行子任务完成；若子任务排在同一个已耗尽的池里，就成了互相等待的死锁。
+     */
+    private final ExecutorService parallelExecutor;
+    /** 记忆提取池：收尾后的best-effort 副作用，单独限流，避免与用户任务抢线程 */
+    private final ExecutorService memoryExecutor;
     private final ConcurrentHashMap<String, RunSession> sessions = new ConcurrentHashMap<>();
+    private static final AtomicInteger THREAD_SEQ = new AtomicInteger();
 
     public AgentEngine(ToolRegistry toolRegistry, LlmClient llmClient, RunStore runStore, MemoryStore memoryStore,
                        @Value("${agentflow.report.department:中台研发部}") String reportDept,
                        @Value("${agentflow.agent.mode:plan}") String agentMode,
-                       @Value("${agentflow.memory.enabled:true}") boolean memoryEnabled) {
+                       @Value("${agentflow.memory.enabled:true}") boolean memoryEnabled,
+                       @Value("${agentflow.stream-flush-chars:64}") int streamFlushChars,
+                       @Value("${agentflow.engine.core-threads:8}") int coreThreads,
+                       @Value("${agentflow.engine.max-threads:32}") int maxThreads,
+                       @Value("${agentflow.engine.queue-capacity:256}") int queueCapacity,
+                       @Value("${agentflow.engine.emitter-timeout-ms:180000}") long emitterTimeoutMs,
+                       @Value("${agentflow.engine.max-sessions:500}") int maxSessions,
+                       @Value("${agentflow.engine.confirm-timeout-min:10}") long confirmTimeoutMin,
+                       @Value("${agentflow.engine.max-react-steps:8}") int maxReactSteps,
+                       @Value("${agentflow.engine.max-hybrid-react-steps:4}") int maxHybridReactSteps,
+                       @Value("${agentflow.engine.max-parallel:3}") int maxParallel) {
         this.toolRegistry = toolRegistry;
         this.llmClient = llmClient;
         this.runStore = runStore;
@@ -127,6 +154,31 @@ public class AgentEngine {
         this.reportDept = reportDept == null || reportDept.isBlank() ? "中台研发部" : reportDept.trim();
         this.agentMode = agentMode == null ? "plan" : agentMode.trim().toLowerCase();
         this.memoryEnabled = memoryEnabled;
+        this.streamFlushChars = Math.max(1, streamFlushChars);
+        this.emitterTimeoutMs = Math.max(1000L, emitterTimeoutMs);
+        this.maxSessions = Math.max(1, maxSessions);
+        this.confirmTimeoutMin = Math.max(1L, confirmTimeoutMin);
+        this.maxReactSteps = Math.max(1, maxReactSteps);
+        this.maxHybridReactSteps = Math.max(1, maxHybridReactSteps);
+        this.maxParallel = Math.max(1, maxParallel);
+        this.executor = boundedPool("agent-run", coreThreads, maxThreads, queueCapacity);
+        this.parallelExecutor = boundedPool("agent-step", coreThreads, maxThreads, queueCapacity);
+        this.memoryExecutor = boundedPool("agent-memory", 1, 2, 64);
+    }
+
+    /** 有界线程池：队列满时抛 RejectedExecutionException，由调用方决定如何降级（不静默阻塞提交线程） */
+    private static ExecutorService boundedPool(String name, int core, int max, int queueCapacity) {
+        int coreSize = Math.max(1, core);
+        ThreadPoolExecutor pool = new ThreadPoolExecutor(
+                coreSize, Math.max(coreSize, max), 60L, TimeUnit.SECONDS,
+                new LinkedBlockingQueue<>(Math.max(1, queueCapacity)),
+                r -> {
+                    Thread t = new Thread(r, name + "-" + THREAD_SEQ.incrementAndGet());
+                    t.setDaemon(true);
+                    return t;
+                });
+        pool.allowCoreThreadTimeOut(true);
+        return pool;
     }
 
     /** ReAct 自主模式：配置开启且 LLM 可用时生效，失败自动回退线性规划 */
@@ -152,13 +204,34 @@ public class AgentEngine {
                 "confirm".equalsIgnoreCase(mode));
         sessions.put(taskId, session);
         session.markStarted();
-        executor.submit(() -> orchestrate(session));
+        try {
+            executor.submit(() -> {
+                // LLM 埋点的任务归属：orchestrate 全程在同一线程上同步执行，故线程内可见。
+                // finally 里的清理是必须的——线程池复用线程时若残留，下一次任务的花费会被记到本次头上。
+                LlmContext.set(taskId);
+                try {
+                    orchestrate(session);
+                } finally {
+                    LlmContext.clear();
+                }
+            });
+        } catch (RejectedExecutionException ex) {
+            // 引擎过载：如实收尾并让订阅方立刻收到结论，而不是挂一个永远不会开始的任务
+            log.warn("引擎繁忙，任务 {} 未能提交：{}", taskId, ex.getMessage());
+            runStore.saveEvent(runId, 0, "status",
+                    map("text", "引擎繁忙，请稍后重试", "cls", "is-running"));
+            runStore.saveEvent(runId, 1, "done",
+                    map("summary", "引擎繁忙，任务未执行", "output", "", "meta", List.of()));
+            runStore.finishRun(runId, "error", "引擎繁忙，任务未执行", "");
+            session.markFinished();
+            evictFinishedSessions();
+        }
         return taskId;
     }
 
     /**
      * 无界面执行一个任务并等待完成（定时晨报等场景使用）。
-     * 返回 {taskId, status, summary, output}；超过 timeoutMs 返回当前状态。
+     * 返回 {taskId, status, summary, output}；超过 timeoutMs 返回 timeout 并请求取消。
      */
     public Map<String, String> executeHeadless(String command, long timeoutMs) {
         String taskId = start(command, List.of(), "auto");
@@ -175,9 +248,21 @@ public class AgentEngine {
             out.put("output", "");
             return out;
         }
+        boolean timedOut = !session.isFinished();
+        if (timedOut) {
+            // 必须真的取消：否则调用方已按失败记录并推送，任务还在后台继续跑、继续烧额度
+            log.warn("无界面任务 {} 超过 {}ms 未完成，已请求取消", taskId, timeoutMs);
+            session.cancel();
+        }
         Map<String, Object> run = runStore.getRun(session.runId());
-        out.put("status", run == null ? (session.isFinished() ? "done" : "running")
-                : String.valueOf(run.getOrDefault("status", "running")));
+        String dbStatus = run == null ? "" : String.valueOf(run.getOrDefault("status", "running"));
+        if (timedOut) {
+            // 取消需要跑到检查点才生效，此刻库里通常还是 running；已落终态就用库里的
+            out.put("status", dbStatus.isEmpty() || "running".equals(dbStatus) ? "timeout" : dbStatus);
+        } else {
+            out.put("status", run == null ? (session.isFinished() ? "done" : "running")
+                    : String.valueOf(run.getOrDefault("status", "running")));
+        }
         out.put("summary", run == null ? "" : String.valueOf(run.getOrDefault("summary", "")));
         out.put("output", run == null ? "" : String.valueOf(run.getOrDefault("output", "")));
         return out;
@@ -212,7 +297,7 @@ public class AgentEngine {
         if (session == null) {
             return replayOnly(taskId, afterSeq);
         }
-        SseEmitter emitter = new SseEmitter(EMITTER_TIMEOUT_MS);
+        SseEmitter emitter = new SseEmitter(emitterTimeoutMs);
         wireEmitter(emitter, session);
         // 补发与挂接在 session 锁内原子完成，与事件推送互斥，保证不重不漏
         synchronized (session) {
@@ -300,7 +385,7 @@ public class AgentEngine {
         if (runId == null) {
             return null;
         }
-        SseEmitter emitter = new SseEmitter(EMITTER_TIMEOUT_MS);
+        SseEmitter emitter = new SseEmitter(emitterTimeoutMs);
         executor.submit(() -> {
             replayFromStore(emitter, runId, afterSeq);
             emitter.complete();
@@ -320,11 +405,11 @@ public class AgentEngine {
 
     /** 会话数超限时淘汰已结束的，防止内存缓慢增长 */
     private void evictFinishedSessions() {
-        if (sessions.size() <= MAX_SESSIONS) {
+        if (sessions.size() <= maxSessions) {
             return;
         }
         for (Map.Entry<String, RunSession> e : sessions.entrySet()) {
-            if (sessions.size() <= MAX_SESSIONS * 3 / 4) {
+            if (sessions.size() <= maxSessions * 3 / 4) {
                 break;
             }
             RunSession s = e.getValue();
@@ -400,7 +485,7 @@ public class AgentEngine {
             recorder.send("phase", map("name", "execute", "state", "active"));
             if (steps == null) {
                 ReactOutcome ro = runReactLoop(recorder, session, command, intent, histBlock,
-                        toolResults, null, 0, MAX_REACT_STEPS, false);
+                        toolResults, null, 0, maxReactSteps, false);
                 writeOutput = ro.writeOutput();
                 total = ro.stepsEmitted();
             } else {
@@ -426,7 +511,7 @@ public class AgentEngine {
                                 "计划步骤未命中或失败，剩余计划步骤中止，转入 ReAct 自主决策"));
                         recorder.send("status", map("text", "计划受阻，切换自主模式继续…", "cls", "is-running"));
                         ReactOutcome ro = runReactLoop(recorder, session, command, intent, histBlock,
-                                toolResults, writeOutput, j, MAX_HYBRID_REACT_STEPS, true);
+                                toolResults, writeOutput, j, maxHybridReactSteps, true);
                         writeOutput = ro.writeOutput();
                         total = j + ro.stepsEmitted();
                         break;
@@ -533,7 +618,8 @@ public class AgentEngine {
 
     private PlanOutcome llmPlan(String command, String histBlock) {
         String system = String.format(PLAN_SYSTEM_TEMPLATE, toolRegistry.describeForPrompt());
-        String content = llmClient.chatJson(system, "用户指令：" + command + histBlock);
+        String content = llmClient.chatJson(system, "用户指令：" + command + histBlock,
+                LlmClient.PURPOSE_PLAN);
         JsonNode node = readJsonObject(content);
         String summary = node.path("summary").asText("");
         List<String> entities = new ArrayList<>();
@@ -603,7 +689,7 @@ public class AgentEngine {
         recorder.send("plan-proposal", map("steps", proposal));
         recorder.send("status", map("text", "等待确认执行计划…", "cls", "is-running"));
         try {
-            List<PlanStep> confirmed = session.awaitConfirm().get(CONFIRM_TIMEOUT_MIN, TimeUnit.MINUTES);
+            List<PlanStep> confirmed = session.awaitConfirm().get(confirmTimeoutMin, TimeUnit.MINUTES);
             List<PlanStep> effective = new ArrayList<>();
             for (PlanStep s : confirmed) {
                 if (!s.skip()) {
@@ -648,9 +734,9 @@ public class AgentEngine {
         for (int k = from; k < to; k++) {
             indexes.add(k);
         }
-        for (int start = 0; start < indexes.size(); start += MAX_PARALLEL) {
+        for (int start = 0; start < indexes.size(); start += maxParallel) {
             checkCancelled(session);
-            List<Integer> batch = indexes.subList(start, Math.min(start + MAX_PARALLEL, indexes.size()));
+            List<Integer> batch = indexes.subList(start, Math.min(start + maxParallel, indexes.size()));
             List<Callable<Map<String, String>>> jobs = new ArrayList<>();
             for (Integer k : batch) {
                 jobs.add(() -> {
@@ -660,7 +746,7 @@ public class AgentEngine {
                 });
             }
             try {
-                List<Future<Map<String, String>>> futures = executor.invokeAll(jobs);
+                List<Future<Map<String, String>>> futures = parallelExecutor.invokeAll(jobs);
                 for (Future<Map<String, String>> f : futures) {
                     toolResults.putAll(f.get());
                 }
@@ -691,7 +777,7 @@ public class AgentEngine {
                     : "";
             String content = llmClient.chatJson(system,
                     "任务目标：" + command + "\n已获得的工具结果：\n" + toolSummary(toolResults) + histBlock
-                            + hybridNote + "\n请决定下一步动作。");
+                            + hybridNote + "\n请决定下一步动作。", LlmClient.PURPOSE_REACT);
             JsonNode node = readJsonObject(content);
             String action = node.path("action").asText("write").toLowerCase();
             if (action.isBlank()) {
@@ -890,11 +976,13 @@ public class AgentEngine {
             if (failedSteps != null && isStepFailed(tr)) {
                 failedSteps.add(index);
             }
-            // 摘要 + 具体数据一并交给后续 LLM 推理/汇总，避免模型只凭一句话编造细节（周报素材较长，放宽截断）
+            // 摘要 + 具体数据一并交给后续 LLM 推理/汇总，避免模型只凭一句话编造细节。
+            // 上限要容得下带提交正文的周报素材（每条提交含 150 字详情，30 条约 6k 字），
+            // 截得太短会把排在后面的项目整段砍掉
             String detail = tr.list() == null || tr.list().isEmpty()
                     ? String.valueOf(tr.result() == null ? Map.of() : tr.result())
                     : String.join("；", tr.list());
-            String summary = (tr.summary() == null ? "" : tr.summary()) + "｜" + truncate(detail, 1600);
+            String summary = (tr.summary() == null ? "" : tr.summary()) + "｜" + truncate(detail, TOOL_MATERIAL_MAX_CHARS);
             // 同名工具可能被规划多次，key 带步骤序号避免相互覆盖
             toolResults.put(s.tool().name() + "#" + index, summary);
 
@@ -919,7 +1007,8 @@ public class AgentEngine {
                     String reasoning = llmClient.chat(THINK_SYSTEM,
                             "用户指令：" + command + "\n子任务：" + s.title()
                                     + "\n意图：" + intent.summary()
-                                    + "\n已获得的工具结果：\n" + toolSummary(toolResults) + histBlock);
+                                    + "\n已获得的工具结果：\n" + toolSummary(toolResults) + histBlock,
+                            LlmClient.PURPOSE_REASON);
                     List<String> generated = normalizeReasonLines(splitLines(reasoning));
                     if (!generated.isEmpty()) {
                         lines = generated;
@@ -948,14 +1037,17 @@ public class AgentEngine {
                     + "\n请生成最终成品内容。";
 
             String content = null;
+            // 已流出的片段：取消时下面那个 result 事件走不到，靠它补一次完整产出给回放用
+            StringBuilder streamed = new StringBuilder();
             // 报告时间窗内没有提交素材时不走 LLM（避免自由发挥破坏固定格式），直接用固定格式模板
             boolean reportHasMaterial = reportWin == null
                     || toolResults.values().stream().anyMatch(v -> v != null && v.contains("共提交"));
             if (llmClient.isEnabled() && reportHasMaterial) {
                 try {
                     // 流式生成：增量片段实时推送，最终以完整 result 事件为准；取消时回调内抛出中断信号
-                    content = llmClient.chatStream(system, userPrompt, piece -> {
+                    content = llmClient.chatStream(system, userPrompt, LlmClient.PURPOSE_GENERATE, piece -> {
                         checkCancelled(session);
+                        streamed.append(piece);
                         recorder.streamDelta(index, piece);
                     });
                 } catch (Exception ex) {
@@ -963,11 +1055,19 @@ public class AgentEngine {
                 } finally {
                     recorder.flushStream(index);
                 }
+                if (session.isCancelled() && streamed.length() > 0) {
+                    // 取消在 result 事件之前就中断了流程，这里补发一次，否则回放只剩半截流式增量
+                    recorder.send("result", map("index", index, "resultType", "copy",
+                            "result", map("versions", List.of(
+                                    map("tag", "已取消 · 部分产出", "text", streamed.toString()))),
+                            "list", List.of()));
+                    recorder.send("step-state", map("index", index, "state", "done"));
+                }
                 checkCancelled(session);
                 if (content == null || content.isBlank()) {
                     // 流式异常或空响应（多为瞬时抖动），退化为非流式整段生成
                     try {
-                        content = llmClient.chat(system, userPrompt);
+                        content = llmClient.chat(system, userPrompt, LlmClient.PURPOSE_GENERATE);
                     } catch (Exception ex2) {
                         log.warn("LLM 非流式生成也失败，使用模板内容: {}", ex2.getMessage());
                     }
@@ -1033,7 +1133,7 @@ public class AgentEngine {
 
     /**
      * 报告时间窗：识别指令中的时间词（今天/昨天/本周/上周/近N天/具体日期或区间）；
-     * 未识别时日报=当天（晨报指令带「昨天」会被识别）、周报=本周兜底。
+     * 未识别时日报=当天（晨报指令带「昨天」会被识别）、周报=本日历周（周一起）兜底。
      */
     private static GitLabTool.Window reportWindow(String command, boolean weekly) {
         GitLabTool.Window w = GitLabTool.parseWindow(command);
@@ -1042,7 +1142,7 @@ public class AgentEngine {
         }
         LocalDate today = LocalDate.now();
         return weekly
-                ? GitLabTool.window(today.minusDays(6), today, "本周")
+                ? GitLabTool.window(today.with(java.time.temporal.TemporalAdjusters.previousOrSame(java.time.DayOfWeek.MONDAY)), today, "本周")
                 : GitLabTool.window(today, today, "今天");
     }
 
@@ -1082,7 +1182,8 @@ public class AgentEngine {
                 + "硬性要求：\n"
                 + "1. 第一行固定为「【" + reportDept + "】个人效能" + kindZh + "」，一字不改\n"
                 + "2. 时间窗内每个有提交的日期独占一行，该行只写「日期（星期）」，如 2026-09-08（周二），星期从对照表取，日期按先后排列，日期行不写任何工作内容\n"
-                + "3. 日期行下方逐条列出当天工作：每条独占一行，以“1. ”“2. ”“3. ”编号且每天从 1 重新开始；同一天归纳为 2~5 条工作主线，可带中文圆括号补充细节，禁止逐条罗列原始提交\n"
+                + "3. 日期行下方逐条列出当天工作：每条独占一行，以“1. ”“2. ”“3. ”编号且每天从 1 重新开始；同一天归纳为 2~5 条工作主线，可带中文圆括号补充细节，禁止逐条罗列原始提交；"
+                + "括注细节必须取自提交记录中「｜ 详情：」后的改动说明——标题只是概括，没有详情支撑的细节不要写\n"
                 + "4. Merge/分支合并/revert 等同步类提交一律忽略，不得出现在报告中；禁止出现分支名、commit 哈希、代码文件名、命令行符号等工程噪音\n"
                 + "5. 每条主线用中文动词开头（完成/新增/修复/优化/联调/配置），面向汇报对象可读；代码前缀如 feat(todo) 应转述为「待办模块」这类中文模块名\n"
                 + "6. 最后是「【" + planZh + "计划】」单独一行，其下 1~3 条计划，每条独占一行并以“1. ”“2. ”编号（基于已有工作合理延伸，没有依据时只写“1. 待补充”）\n"
@@ -1268,7 +1369,7 @@ public class AgentEngine {
                         "用户指令：" + command + "\n各子任务执行结果：\n" + toolSummary(toolResults)
                                 + "\n生成步内容：\n" + (writeOutput == null ? "（无）" : writeOutput)
                                 + histBlock
-                                + "\n请按格式汇总输出。");
+                                + "\n请按格式汇总输出。", LlmClient.PURPOSE_SUMMARIZE);
                 List<String> cleaned = new ArrayList<>();
                 for (String l : content.split("\n")) {
                     if (!l.isBlank()) cleaned.add(l.trim());
@@ -1390,13 +1491,18 @@ public class AgentEngine {
         if (output == null || output.isBlank() || parseMemoryCommand(command) != null) {
             return;
         }
-        executor.submit(() -> {
-            try {
-                extractMemories(command, output);
-            } catch (Exception ex) {
-                log.debug("记忆自动提取失败: {}", ex.getMessage());
-            }
-        });
+        try {
+            memoryExecutor.submit(() -> {
+                try {
+                    extractMemories(command, output);
+                } catch (Exception ex) {
+                    log.debug("记忆自动提取失败: {}", ex.getMessage());
+                }
+            });
+        } catch (RejectedExecutionException ex) {
+            // 记忆提取是 best-effort 的副作用，过载时直接放弃，不能影响用户任务
+            log.debug("记忆提取队列已满，跳过本次提取");
+        }
     }
 
     private void extractMemories(String command, String output) {
@@ -1405,7 +1511,7 @@ public class AgentEngine {
                 + "\n执行产出（节选）：\n" + truncate(output, 1200)
                 + "\n现有记忆：\n" + (existing.isEmpty() ? "（空）" : String.join("\n", existing))
                 + "\n请输出 JSON。";
-        String content = llmClient.chatJson(EXTRACT_SYSTEM, user);
+        String content = llmClient.chatJson(EXTRACT_SYSTEM, user, LlmClient.PURPOSE_MEMORY);
         JsonNode node = readJsonObject(content);
         node.path("add").forEach(a -> {
             String v = a.asText("").trim();
@@ -1529,26 +1635,30 @@ public class AgentEngine {
 
         @SuppressWarnings("unchecked")
         void send(String event, Object data) {
+            SseEmitter emitter;
             synchronized (session) {
+                // seq 递增与落库要在同一把锁内：重连补发按 seq 读库，顺序不一致会漏事件或重复
                 if (data instanceof Map) {
                     ((Map<String, Object>) data).putIfAbsent("seq", seq);
                 }
                 runStore.saveEvent(session.runId(), seq, event, data);
                 seq++;
-                SseEmitter emitter = session.emitter();
-                if (emitter != null) {
-                    try {
-                        emitter.send(SseEmitter.event().name(event).data(data));
-                    } catch (Exception ex) {
-                        session.detachEmitter(emitter);
-                    }
+                emitter = session.emitter();
+            }
+            // 推流放到锁外：客户端不读时 send 会阻塞，不能连带卡住 attach/detach 与后续落库。
+            // 落库在锁内、emitter 也在锁内取，所以新订阅方复现的边界不会漏事件也不会重复。
+            if (emitter != null) {
+                try {
+                    emitter.send(SseEmitter.event().name(event).data(data));
+                } catch (Exception ex) {
+                    session.detachEmitter(emitter);
                 }
             }
         }
 
         void streamDelta(int stepIndex, String piece) {
             streamBuf.append(piece);
-            if (streamBuf.length() >= STREAM_FLUSH_CHARS) {
+            if (streamBuf.length() >= streamFlushChars) {
                 flushStream(stepIndex);
             }
         }

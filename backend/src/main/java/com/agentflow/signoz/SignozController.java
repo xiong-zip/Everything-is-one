@@ -4,6 +4,8 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -18,9 +20,11 @@ import java.util.Map;
 public class SignozController {
 
     private final TraceAnalysisStore store;
+    private final PostmortemService postmortem;
 
-    public SignozController(TraceAnalysisStore store) {
+    public SignozController(TraceAnalysisStore store, PostmortemService postmortem) {
         this.store = store;
+        this.postmortem = postmortem;
     }
 
     /** 分页列表，keyword 可匹配 trace_id / 失败点 / 指纹 / 服务 / 命中案例 */
@@ -58,5 +62,25 @@ public class SignozController {
     @GetMapping("/stats")
     public TraceAnalysisStore.Stats stats() {
         return store.stats();
+    }
+
+    /**
+     * 一键故障报告：聚合链路/变更/K8s/告警时间线生成 postmortem（链路面板按钮入口）。
+     * 同步执行（含 LLM 归纳时可能要几十秒），前端按需展示进度态。
+     */
+    @PostMapping("/report")
+    public Map<String, Object> report(@RequestBody Map<String, String> body) {
+        String traceId = body == null ? null : body.get("traceId");
+        if (traceId == null || traceId.isBlank()) {
+            throw new IllegalArgumentException("traceId 不能为空");
+        }
+        String timeRange = body.get("timeRange");
+        PostmortemService.Report r = postmortem.generate(traceId.trim(), timeRange);
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("traceId", r.traceId());
+        out.put("engine", r.engine());
+        out.put("markdown", r.markdown());
+        out.put("meta", r.meta());
+        return out;
     }
 }
