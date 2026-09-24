@@ -4,10 +4,12 @@ import com.agentflow.engine.AgentEngine;
 import com.agentflow.engine.RunStore;
 import com.agentflow.llm.LlmClient;
 import com.agentflow.model.PlanConfirmRequest;
+import com.agentflow.model.RenameSessionRequest;
 import com.agentflow.model.RunRequest;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -31,7 +33,7 @@ public class AgentController {
             Map.of("command", "根据我的 GitLab 提交记录生成本周的工作周报", "short", "GitLab 周报"),
             Map.of("command", "分析链路 c4ea16342cf1a0526d22fa20d57c9e2a", "short", "链路分析"),
             Map.of("command", "查一下当前数据库里有哪些表", "short", "数据库表清单"),
-            Map.of("command", "帮我写一封调休假的请假邮件", "short", "写邮件"));
+            Map.of("command", "帮我写一段版本发布的公告文案", "short", "写公告"));
 
     private final AgentEngine engine;
     private final LlmClient llmClient;
@@ -49,7 +51,12 @@ public class AgentController {
             throw new IllegalArgumentException("command 不能为空");
         }
         String taskId = engine.start(request.command().trim(), request.history(), request.mode(), request.sessionId());
-        return Map.of("taskId", taskId);
+        // runId 是该轮消息的数据库 id：前端「编辑重发」时用它删掉被覆盖的旧问答
+        Long runId = runStore.findRunIdByTaskId(taskId);
+        Map<String, String> out = new LinkedHashMap<>();
+        out.put("taskId", taskId);
+        if (runId != null && runId > 0) out.put("runId", String.valueOf(runId));
+        return out;
     }
 
     /** confirm 模式：前端确认/编辑后的计划回传，引擎继续执行 */
@@ -112,6 +119,20 @@ public class AgentController {
             runsOut.add(full);
         }
         return Map.of("runs", runsOut, "hasMore", page.hasMore());
+    }
+
+    /** 重命名对话：title 传空白则清除自定义标题，恢复为首条指令自动命名 */
+    @PatchMapping("/sessions/{id}")
+    public Map<String, String> renameSession(@PathVariable("id") String id,
+                                             @RequestBody RenameSessionRequest request) {
+        String title = request == null || request.title() == null ? "" : request.title().trim();
+        if (title.length() > 60) {
+            throw new IllegalArgumentException("标题最多 60 个字符");
+        }
+        if (!runStore.renameSession(id, title)) {
+            throw new IllegalArgumentException("对话不存在");
+        }
+        return Map.of("ok", "renamed");
     }
 
     /** 删除整个对话 */

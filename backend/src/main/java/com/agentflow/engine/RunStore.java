@@ -85,6 +85,11 @@ public class RunStore {
             // taskId 反查（SSE 重连）与按会话分页取消息都靠这两个索引，否则全表扫描
             st.execute("CREATE INDEX IF NOT EXISTS idx_runs_task ON runs(task_id)");
             st.execute("CREATE INDEX IF NOT EXISTS idx_runs_session ON runs(session_id, id)");
+            // 对话自定义标题：不动 runs 结构，列表标题优先取这里，缺省回退首条指令
+            st.execute("CREATE TABLE IF NOT EXISTS sessions (" +
+                    "session_id TEXT PRIMARY KEY," +
+                    "title TEXT NOT NULL," +
+                    "updated_at TEXT NOT NULL)");
         } catch (Exception ex) {
             log.error("初始化 SQLite 失败，历史记录将不可用：{}", ex.getMessage());
             return;
@@ -173,11 +178,12 @@ public class RunStore {
         }
     }
 
-    /** 对话列表：一个 session = 一次对话，标题取首条指令，按最近活动倒序 */
+    /** 对话列表：一个 session = 一次对话，标题优先取自定义命名、缺省回退首条指令，按最近活动倒序 */
     public List<Map<String, Object>> listSessions() {
         List<Map<String, Object>> out = new ArrayList<>();
         String sql = "SELECT session_id, " +
-                "(SELECT command FROM runs r2 WHERE r2.session_id = r.session_id ORDER BY r2.id LIMIT 1) AS title, " +
+                "COALESCE((SELECT s.title FROM sessions s WHERE s.session_id = r.session_id), " +
+                "(SELECT command FROM runs r2 WHERE r2.session_id = r.session_id ORDER BY r2.id LIMIT 1)) AS title, " +
                 "COUNT(*) AS cnt, MAX(created_at) AS last_time, " +
                 "SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) AS err_cnt, " +
                 "SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END) AS run_cnt " +
@@ -253,6 +259,39 @@ public class RunStore {
         return new SessionPage(desc, hasMore);
     }
 
+    /** 重命名对话：空白标题表示清除自定义命名、恢复自动标题；对话不存在返回 false */
+    public boolean renameSession(String sessionId, String title) {
+        try (Connection c = open()) {
+            try (PreparedStatement check = c.prepareStatement("SELECT 1 FROM runs WHERE session_id = ? LIMIT 1")) {
+                check.setString(1, sessionId);
+                try (ResultSet rs = check.executeQuery()) {
+                    if (!rs.next()) return false;
+                }
+            }
+            if (title == null || title.isBlank()) {
+                try (PreparedStatement ps = c.prepareStatement("DELETE FROM sessions WHERE session_id = ?")) {
+                    ps.setString(1, sessionId);
+                    ps.executeUpdate();
+                }
+                return true;
+            }
+            String now = java.time.LocalDateTime.now()
+                    .format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
+            try (PreparedStatement ps = c.prepareStatement(
+                    "INSERT INTO sessions(session_id, title, updated_at) VALUES(?, ?, ?) " +
+                            "ON CONFLICT(session_id) DO UPDATE SET title = excluded.title, updated_at = excluded.updated_at")) {
+                ps.setString(1, sessionId);
+                ps.setString(2, title);
+                ps.setString(3, now);
+                ps.executeUpdate();
+            }
+            return true;
+        } catch (Exception ex) {
+            log.warn("重命名对话失败：{}", ex.getMessage());
+            return false;
+        }
+    }
+
     /** 删除整个对话（含全部消息与事件） */
     public void deleteSession(String sessionId) {
         inTransaction("删除对话", c -> {
@@ -262,6 +301,10 @@ public class RunStore {
                 ps.executeUpdate();
             }
             try (PreparedStatement ps = c.prepareStatement("DELETE FROM runs WHERE session_id = ?")) {
+                ps.setString(1, sessionId);
+                ps.executeUpdate();
+            }
+            try (PreparedStatement ps = c.prepareStatement("DELETE FROM sessions WHERE session_id = ?")) {
                 ps.setString(1, sessionId);
                 ps.executeUpdate();
             }

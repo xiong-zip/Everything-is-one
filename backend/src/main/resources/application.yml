@@ -146,6 +146,33 @@ agentflow:
     # 自定义排查指令模板，可用占位符 {traceId} {service} {alertName} {severity} {message} {title}；
     # 留空则按「有链路→有服务→都没有」自动选择内置指令
     command: ${AGENTFLOW_ALARM_COMMAND:}
+  wecom:
+    # 企微接入（内置 wecom.* 工具）：经由部署机上的 wecom-cli 调用（npm install -g @wecom/cli，Node 18+），
+    # 扫码授权在终端执行 wecom-cli auth init，服务端不接触任何 Secret
+    enabled: ${AGENTFLOW_WECOM_ENABLED:true}
+    cli-cmd: ${AGENTFLOW_WECOM_CLI_CMD:wecom-cli}
+    # 单次 CLI 调用超时（毫秒）
+    timeout-ms: ${AGENTFLOW_WECOM_TIMEOUT_MS:60000}
+    # 单次 CLI 输出截断上限（字符）
+    max-output-chars: ${AGENTFLOW_WECOM_MAX_OUTPUT_CHARS:60000}
+    # 一键工作日报（内置 wecom.daily 工具）：目标智能表格与提交人写死在配置里，写入幂等（同日同提交人更新而非新增）
+    daily:
+      docid: ${AGENTFLOW_DAILY_DOCID:}
+      sheet-id: ${AGENTFLOW_DAILY_SHEET_ID:}
+      submitter-userid: ${AGENTFLOW_DAILY_SUBMITTER:}
+      summary-field: ${AGENTFLOW_DAILY_SUMMARY_FIELD:今日工作总结}
+      plan-field: ${AGENTFLOW_DAILY_PLAN_FIELD:明日工作计划}
+      date-field: ${AGENTFLOW_DAILY_DATE_FIELD:日报提交日期}
+      submitter-field: ${AGENTFLOW_DAILY_SUBMITTER_FIELD:提交人}
+  mcpserver:
+    # 对外 MCP 服务（把 Agent 工具暴露给企微智能机器人等外部 MCP 客户端，端点 POST /api/mcp/server）
+    enabled: ${AGENTFLOW_MCP_SERVER_ENABLED:true}
+    # Bearer 令牌；留空时只允许本机回环访问（暴露到内网以外务必配置）
+    token: ${AGENTFLOW_MCP_SERVER_TOKEN:}
+    # 不对外暴露的工具名前缀（逗号分隔）
+    blacklist: ${AGENTFLOW_MCP_SERVER_BLACKLIST:}
+    # 调用记录保留条数
+    call-log-max: ${AGENTFLOW_MCP_SERVER_CALL_LOG_MAX:500}
   schedule:
     morning-report:
       # 自动晨报机器人：定时生成昨日日报并推送（需配置 GITLAB_TOKEN；推送需配置 Webhook）

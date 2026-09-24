@@ -76,15 +76,15 @@ const UTILITY = { key: 'general', icon: '✦', label: '通用设置' }
 /* 分组 key → 二级子视图 key */
 const GROUP_OF = {
   trace: 'obs', alarm: 'obs', svcs: 'obs',
-  tools: 'toolkit', mcp: 'toolkit', morning: 'toolkit',
-  db: 'access', gitlab: 'access',
+  tools: 'toolkit', mcp: 'toolkit', expose: 'toolkit', morning: 'toolkit',
+  db: 'access', gitlab: 'access', wecom: 'access',
   kb: 'knowledge', memory: 'knowledge',
   llm: 'model', usage: 'model',
 }
 const SUB_OF = {
   trace: 'trace', alarm: 'alarm', svcs: 'svcs',
-  tools: 'tools', mcp: 'mcp', morning: 'morning',
-  db: 'db', gitlab: 'gitlab',
+  tools: 'tools', mcp: 'mcp', expose: 'expose', morning: 'morning',
+  db: 'db', gitlab: 'gitlab', wecom: 'wecom',
   kb: 'kb', memory: 'memory',
   llm: 'llm', usage: 'usage',
 }

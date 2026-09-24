@@ -24,6 +24,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.UUID;
+import java.util.regex.Pattern;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
@@ -449,6 +450,9 @@ public class AgentEngine {
                 return;
             }
         }
+        // @工具 直达通道：指令里 @了已注册工具名时不经 LLM 规划，直接按「该工具 + 汇报」执行
+        // （规划器实测会把「执行工具 X」改写成自己熟悉的取数路径，点名工具必须走快速通道）
+        String mentionedTool = extractToolMention(command, toolRegistry);
         try {
             /* 阶段一+二：意图分析与任务规划（LLM 模式一次调用同时完成；confirm 模式推送计划等待放行；ReAct 跳过预规划） */
             recorder.send("phase", map("name", "understand", "state", "active"));
@@ -461,7 +465,15 @@ public class AgentEngine {
                 recorder.send("phase", map("name", "plan", "state", "done"));
                 recorder.send("status", map("text", "ReAct 自主模式 · 逐步决策执行…", "cls", "is-running"));
             } else {
-                PlanOutcome po = plan(command, histBlock);
+                PlanOutcome po;
+                if (mentionedTool != null) {
+                    // 只放工具步，收尾交给 mergeFinal 汇总：write 步会因指令含「日报」等关键词
+                    // 触发报告模板分支、无视工具结果另起炉灶（实测），直达路径不能带它
+                    po = new PlanOutcome(new Intent("直达执行工具 " + mentionedTool, List.of("工具:" + mentionedTool)),
+                            List.of(PlanStep.tool("调用 " + mentionedTool, new ToolCall(mentionedTool, new LinkedHashMap<>()))));
+                } else {
+                    po = plan(command, histBlock);
+                }
                 intent = po.intent();
                 steps = po.steps();
                 recorder.send("intent", map("summary", intent.summary(), "entities", intent.entities()));
@@ -616,8 +628,45 @@ public class AgentEngine {
 
     /* ================= 任务规划 ================= */
 
+    /** @ 提及的工具名形态：前缀.名字（如 @wecom.daily）；要求带点号，避免误伤 @人名/邮箱 */
+    private static final Pattern TOOL_MENTION = Pattern.compile("@([a-z][a-z0-9-]*(?:\\.[a-z][a-z0-9-]*)+)");
+
+    /**
+     * 从指令中提取 @ 点名的已注册工具名（取第一个命中的）。
+     * 未命中注册名返回 null（走常规规划）。纯函数依赖注入 registry，便于单测。
+     */
+    static String extractToolMention(String command, ToolRegistry registry) {
+        if (command == null || command.indexOf('@') < 0) {
+            return null;
+        }
+        java.util.regex.Matcher m = TOOL_MENTION.matcher(command);
+        while (m.find()) {
+            String name = m.group(1);
+            if (registry.get(name) != null) {
+                return name;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 指令文本里出现已注册工具名（不带 @）时给规划器的硬约束：
+     * 计划必须包含该工具步、不得安排同用途的其它取数步（实测 LLM 会把「执行工具 X」改写成惯用路径）。
+     */
+    private String namedToolConstraint(String command) {
+        for (Tool t : toolRegistry.all()) {
+            String n = t.name();
+            if (command != null && command.contains(n) && command.contains("工具")) {
+                return "\n硬性要求：用户指令点名了工具 " + n
+                        + "，计划中必须包含调用 " + n + " 的 tool 步骤，且不要安排与之用途重复的其它取数步骤。";
+            }
+        }
+        return "";
+    }
+
     private PlanOutcome llmPlan(String command, String histBlock) {
-        String system = String.format(PLAN_SYSTEM_TEMPLATE, toolRegistry.describeForPrompt());
+        String system = String.format(PLAN_SYSTEM_TEMPLATE, toolRegistry.describeForPrompt())
+                + namedToolConstraint(command);
         String content = llmClient.chatJson(system, "用户指令：" + command + histBlock,
                 LlmClient.PURPOSE_PLAN);
         JsonNode node = readJsonObject(content);

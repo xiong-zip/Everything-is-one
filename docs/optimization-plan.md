@@ -117,6 +117,8 @@
 
 ## 六、第二批 backlog
 
+- **企微智能机器人接入对外 MCP 服务（已具备、暂缓启用）**：对外 MCP 端点（`POST /api/mcp/server`，Bearer 令牌）已实现并在本机验证（tools/list 15 个工具、写操作拒绝、调用记录落库），但企微后台的机器人只能访问**内网可达地址**——本地开发机没有固定内网入口，等部署到内网服务器后只需：管理后台建机器人 → MCP 配置填 `http://<部署机>:8888/api/mcp/server` + 请求头 `Authorization: Bearer <AGENTFLOW_MCP_SERVER_TOKEN>`。端点本身无需再开发；届时可选增强：`?token=` 查询参数鉴权（若企微配置界面不支持自定义请求头）、按工具粒度的暴露白名单。
+
 - `result-delta` 完全不落库（依赖第一批第 7 项）
 - 前端状态从 `App.vue` 拆出（11 个 ref + 2 个映射 join watcher）
 - 15 处 `window.confirm` → 统一应用内确认组件

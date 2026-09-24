@@ -16,6 +16,7 @@
     <KeepAlive>
       <ToolsDrawer v-if="active === 'tools'" embedded />
       <McpPane v-else-if="active === 'mcp'" />
+      <McpExposePane v-else-if="active === 'expose'" />
       <ScheduleDrawer v-else-if="active === 'morning'" embedded />
     </KeepAlive>
   </div>
@@ -28,6 +29,7 @@
 import { ref, watch } from 'vue'
 import ToolsDrawer from './ToolsDrawer.vue'
 import McpPane from './McpPane.vue'
+import McpExposePane from './McpExposePane.vue'
 import ScheduleDrawer from './ScheduleDrawer.vue'
 
 const props = defineProps({
@@ -38,6 +40,7 @@ const props = defineProps({
 const tabs = [
   { key: 'tools', label: '工具管理' },
   { key: 'mcp', label: 'MCP 服务' },
+  { key: 'expose', label: '对外服务' },
   { key: 'morning', label: '定时任务' },
 ]
 const active = ref(tabs.some((t) => t.key === props.sub) ? props.sub : 'tools')

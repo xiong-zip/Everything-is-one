@@ -45,9 +45,23 @@
             @keydown.enter="onOpenSession(s.id)"
           >
             <div class="rail-row">
-              <span class="rail-text">{{ s.title || '（空对话）' }}</span>
-              <span class="rail-count">{{ s.count }}</span>
-              <button class="rail-del" type="button" aria-label="删除该对话" @click.stop="onDeleteSession(s.id)">✕</button>
+              <input
+                v-if="renamingId === s.id"
+                class="rail-rename"
+                v-model="renamingTitle"
+                maxlength="60"
+                :ref="focusRenameInput"
+                @click.stop
+                @keydown.enter.prevent="commitRename(s)"
+                @keydown.esc.prevent="cancelRename"
+                @blur="commitRename(s)"
+              />
+              <template v-else>
+                <span class="rail-text" @dblclick.stop="startRename(s)">{{ s.title || '（空对话）' }}</span>
+                <span class="rail-count">{{ s.count }}</span>
+                <button class="rail-del rail-edit-btn" type="button" aria-label="编辑对话标题" title="编辑标题" @click.stop="startRename(s)">✎</button>
+                <button class="rail-del" type="button" aria-label="删除该对话" @click.stop="onDeleteSession(s.id)">✕</button>
+              </template>
             </div>
           </div>
         </div>
@@ -116,7 +130,7 @@
               </svg>
             </div>
             <h1>你好，我是 <em>AgentFlow</em></h1>
-            <p>告诉我任何任务——根据提交生成日报周报、分析链路定位故障根因、查数据库表结构，或者写文案、写邮件。我会自动拆解、调用工具、逐步完成并汇总结果。</p>
+            <p>告诉我任何任务——根据提交生成日报周报、分析链路定位故障根因、查数据库表结构，或者写文案、写公告。我会自动拆解、调用工具、逐步完成并汇总结果。</p>
             <div class="welcome-ideas">
               <button v-for="s in examples" :key="s.command" type="button" class="chip" @click="prefill = { command: s.command, nonce: Date.now() }">{{ s.short }}</button>
             </div>
@@ -131,7 +145,33 @@
 
           <div v-for="run in runs" :key="run.id" class="turn" :class="{ replay: run.replayed }" :data-run-id="run.id">
             <div class="user-bubble-row">
-              <div class="user-bubble">{{ run.command }}</div>
+              <!-- 编辑态：最后一轮消息点 ✎ 进入，Enter 重发（Shift+Enter 换行），Esc 放弃 -->
+              <div v-if="editingMsgId === run.id" class="user-bubble-edit">
+                <textarea
+                  class="ube-text"
+                  v-model="editingMsgText"
+                  rows="2"
+                  :ref="focusMsgEdit"
+                  @input="autoGrowMsgEdit"
+                  @keydown.enter.exact.prevent="commitMsgEdit(run)"
+                  @keydown.esc.prevent="cancelMsgEdit"
+                ></textarea>
+                <div class="ube-actions">
+                  <button class="ube-btn primary" type="button" @click="commitMsgEdit(run)">↻ 重发</button>
+                  <button class="ube-btn" type="button" @click="cancelMsgEdit">取消</button>
+                </div>
+              </div>
+              <template v-else>
+                <div class="user-bubble">{{ run.command }}</div>
+                <button
+                  v-if="canEditMsg(run)"
+                  class="ube-trigger"
+                  type="button"
+                  aria-label="编辑并重发这条消息"
+                  title="编辑并重发"
+                  @click="startMsgEdit(run)"
+                >✎</button>
+              </template>
             </div>
             <AgentRun :run="run" @plan-confirm="onPlanConfirm" @plan-cancel="onPlanCancel" @clarify-run="runAgent" />
           </div>
@@ -152,6 +192,7 @@ import ModelPicker from './components/ModelPicker.vue'
 import WorkbenchModal from './components/WorkbenchModal.vue'
 import ToastHost from './components/ToastHost.vue'
 import { useAgent } from './composables/useAgent'
+import { showToast } from './composables/useToast'
 
 const API_BASE = '/api/agent'
 
@@ -192,6 +233,55 @@ function onWorkbenchRun(payload) {
   }
 }
 
+/* ---------- 最新一条消息：编辑后原地重发覆盖 ---------- */
+
+/* 只有最后一轮、已收尾（完成/停止/回放完）且当前空闲时才可编辑重发 */
+function canEditMsg(run) {
+  return !busy.value
+    && !!run.final?.visible
+    && runs.value[runs.value.length - 1] === run
+}
+
+const editingMsgId = ref(0)
+const editingMsgText = ref('')
+
+function startMsgEdit(run) {
+  editingMsgId.value = run.id
+  editingMsgText.value = run.command
+}
+
+function cancelMsgEdit() {
+  editingMsgId.value = 0
+  editingMsgText.value = ''
+}
+
+/* 挂载即聚焦；高度按内容自适应，避免短消息也占一大块 */
+function focusMsgEdit(el) {
+  if (!el) return
+  nextTick(() => {
+    el.focus()
+    el.style.height = 'auto'
+    el.style.height = el.scrollHeight + 'px'
+  })
+}
+
+/* 输入过程中随内容增高（上限一屏，超出滚动） */
+function autoGrowMsgEdit(e) {
+  const el = e.target
+  el.style.height = 'auto'
+  el.style.height = Math.min(el.scrollHeight, 320) + 'px'
+}
+
+async function commitMsgEdit(run) {
+  if (editingMsgId.value !== run.id) return
+  const text = editingMsgText.value.trim()
+  editingMsgId.value = 0
+  editingMsgText.value = ''
+  // 只要文本非空就重发：内容没改也重新执行一遍（相当于「重新生成」），取消走 Esc/取消按钮
+  if (!text) return
+  editResend(run, text)
+}
+
 async function loadDbMeta() {
   try {
     const [res, act] = await Promise.all([
@@ -226,7 +316,7 @@ watch(workbenchOpen, (open) => {
 const {
   runs, busy, runAgent, stopRun, confirmMode, confirmPlan,
   replayRun, history, historyLoading, clearHistoryAll,
-  sessionId, loadSessions, newSession, openSession, deleteSession,
+  sessionId, loadSessions, newSession, openSession, deleteSession, editResend,
   sessionHasMore, sessionLoadingMore, loadEarlier,
 } = useAgent()
 
@@ -371,6 +461,48 @@ async function onOpenSession(id) {
 function onDeleteSession(id) {
   if (busy.value) return
   deleteSession(id)
+}
+
+/* ---------- 对话标题就地编辑：✎ 或双击标题进入，Enter/失焦保存，Esc 放弃 ---------- */
+
+const renamingId = ref('')
+const renamingTitle = ref('')
+
+function startRename(s) {
+  renamingId.value = s.id
+  renamingTitle.value = s.title || ''
+}
+
+function cancelRename() {
+  renamingId.value = ''
+  renamingTitle.value = ''
+}
+
+/* input 挂载即聚焦；全选放到 nextTick——ref 回调时 v-model 的初值可能尚未 patch，
+   过早 select() 选中的是空串，看起来就是没有全选 */
+function focusRenameInput(el) {
+  if (!el) return
+  el.focus()
+  nextTick(() => el.select())
+}
+
+async function commitRename(s) {
+  if (renamingId.value !== s.id) return // 已被 Enter/Esc 收起后冒出来的重复 blur
+  const title = renamingTitle.value.trim()
+  renamingId.value = ''
+  if (!title || title === (s.title || '')) return
+  try {
+    const res = await fetch(`${API_BASE}/sessions/${encodeURIComponent(s.id)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title }),
+    })
+    if (!res.ok) throw new Error(String(res.status))
+    s.title = title
+    showToast('标题已更新')
+  } catch {
+    showToast('标题保存失败', 'err')
+  }
 }
 
 function confirmClear() {

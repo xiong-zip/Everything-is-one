@@ -27,6 +27,10 @@
 | **主动健康巡检** | 内置 `signoz.health` 工具：一次调用扫全部服务的错误率/P99/调用量（SigNoz）+ K8s 异常 Pod（CrashLoop/Pending/未就绪/高重启）+ 近窗口告警值守记录，输出按高/中分级的风险清单（阈值可调、小样本服务不误报）；不等告警上门主动发现风险。对话里说「巡检/体检」即用，也适合加一条定时任务「对全部服务做健康巡检，生成晨间风险预告」到点自动推送 |
 | **一键故障报告** | 内置 `signoz.report` 工具 + 链路分析面板按钮：给一个 trace ID 自动聚合四路证据——链路分析（根因/传播链）、变更关联（谁改坏的）、K8s 实例状态、告警值守时间线——生成结构化故障报告（影响面/时间线/根因分析含置信度/处置建议/待办事项）；配置 LLM 用模型归纳（只用给定证据、不确定标「待确认」），未配置用模板如实拼装；报告可复制/下载 .md，归档仍走 signoz.case 人工放行 |
 | **告警自动值守** | 给监控平台配一个 webhook 地址（`POST /api/hooks/alarm`）即可：**告警一到就自动排查**——有 trace ID 就分析链路并关联代码变更，只有服务名就查 Pod 状态与异常事件，结论推送并 @ 值班人，全程无需有人在。跨平台载荷通用解析（SigNoz / Alertmanager / 纯文本都能收）；**同一告警在窗口内只排查一次**（防告警风暴），已恢复的告警只留痕不排查；排查出的故障指纹若此前已出现过，会在推送里标注**疑似回归**并附历史链路。工作台 → 可观测 → 告警值守 面板可见接入地址、模拟验证、全部记录与结论全文 |
+| **@ 点名工具直达** | 输入框打 `@` 唤起工具下拉（名称/说明过滤，↑↓ 选择、Enter 插入）；指令里 `@工具名`（如 `@wecom.daily 提交今天的工作日报`）**跳过 LLM 规划直接执行该工具**——规划器偶尔会把「执行工具 X」改写成惯用取数路径，点名即免；定时任务里同样可用 @ 指令 |
+| **一键工作日报（wecom.daily）** | 拉取指定日期（默认今天）的 GitLab 提交 → 生成「今日工作总结/明日工作计划」→ **写入团队智能表格指定子表**（目标表格在 .env 固定，`AGENTFLOW_DAILY_DOCID/SHEET_ID/SUBMITTER`）。写入**幂等**：同日机器人自己的记录已存在则更新而非新增（按 creator 识别，重复跑定时任务不刷屏）；当日无提交默认不写。免确认设计：LLM 只能控制日期与正文、目标写死、写入幂等，适合挂定时任务无人值守 |
+| **企业微信接入（wecom.\* 工具）** | 经部署机上的 [wecom-cli](https://github.com/WecomTeam/wecom-cli) 操作企业微信：文档检索/读取（`wecom.doc.query`，只读）、文档新建/追加/覆盖（`wecom.doc.write`）、发送消息（`wecom.message.send`）、通用兜底 `wecom.call`（邮件/待办/日程/微盘/通讯录等全部服务，方法名 `service.method` 两段式）。写操作一律强制人工确认；扫码授权在部署机终端完成，凭据只留本机，服务端不接触任何 Secret。工作台 → 外部接入 → 企业微信 面板可看授权状态与能力清单（从 CLI 帮助解析，实测 13 服务 94 方法） |
+| **对外 MCP 服务** | 把 Agent 工具（查链路、巡检、知识库、数据库透视等）以 MCP 服务形式暴露给外部客户端（`POST /api/mcp/server`，Streamable HTTP 无状态）。典型用法：企微管理后台「智能机器人 → MCP 配置」填入接入地址，之后在企微里对话即可调用。写操作工具在外部通道无法人工放行，一律拒绝执行（readOnlyHint 如实标注）；未配令牌时仅本机可访问，调用记录落库可在 工作台 → 工具与自动化 → 对外服务 面板查看 |
 | **工作台（窗口弹窗）** | 入口在左下角输入区，打开为居中窗口：**左侧菜单 + 右侧内容**。菜单按域收敛为五个分组，组内用二级 tab 切换，不必为每个面板各记一个入口：**可观测**（链路分析记录、告警值守、服务映射）、**工具与自动化**（工具管理、MCP 服务、定时任务——内含推送通道管理）、**外部接入**（数据库连接、GitLab 效能）、**知识与记忆**（知识库、记忆）、**模型与成本**（模型接入、效能与成本）；底部另有独立的**通用设置**（主题切换）；支持 Esc / 点遮罩 / 关闭按钮退出 |
 | **链路分析记录** | 每次链路分析自动落库（按 trace ID 去重，重复分析累加次数）：失败点、指纹、涉及服务、耗时、环境、命中的案例、分析摘要全文；可按 trace ID / 失败点 / 指纹 / 服务 / 案例号检索，并统计失败数与高频故障指纹 |
 | **GitLab 效能日报/周报** | 拉取时间窗内逐条提交，LLM 归纳成固定格式报告，支持「今天/昨天/本周」 |
@@ -84,6 +88,8 @@ Everything-is-one/
         │   ├── engine/                    # AgentEngine(编排) / RunSession(会话) / RunStore(SQLite)
         │   ├── alarm/                     # 告警值守（AlarmParser 跨平台解析 / AlarmService 去重与后台排查 / AlarmStore）
         │   ├── mcp/                       # 通用 MCP 客户端（McpClient 协议与传输 / McpTool 适配 / McpToolService 注册 / McpServerStore）
+│   ├── wecom/                     # 企微接入（WecomCliRunner 进程执行 / wecom.* 工具 / 能力发现与缓存）
+│   ├── mcpserver/                 # 对外 MCP 服务端（JSON-RPC 处理 / 调用记录）
         │   ├── schedule/                  # 定时任务（ScheduleService 调度 / ScheduleStore 任务与执行记录）
         │   ├── notify/                    # 推送通道（NotifyService 多通道分发 / NotifyChannelStore 多选配置）
         │   ├── llm/                       # LlmClient（双协议 + 用量埋点）/ LlmContext(任务归属) / LlmUsageStore / LlmUsageService
@@ -167,6 +173,9 @@ start.bat
 | `AGENTFLOW_LLM_STREAM_USAGE` | 否 | 流式响应是否向服务端请求精确 token 用量（默认 `false`）。部分兼容网关不认该参数会直接 400；关闭时按文本长度估算并标记为估算值 |
 | `AGENTFLOW_LLM_PRICE_INPUT` / `AGENTFLOW_LLM_PRICE_OUTPUT` | 否 | 输入/输出单价（元/百万 token，默认 `0` = 不显示金额只显示 token）。不内置价目表：各家价格会变、网关常有折扣，写死的数字只会给出看似精确的错误结论 |
 | `AGENTFLOW_LLM_USAGE_MAX` | 否 | LLM 调用埋点保留条数上限（默认 `20000`） |
+| `AGENTFLOW_WECOM_ENABLED` / `AGENTFLOW_WECOM_CLI_CMD` / `AGENTFLOW_WECOM_TIMEOUT_MS` | 否 | 企微接入：总开关（默认 `true`）/ CLI 命令名或完整路径（默认 `wecom-cli`，Windows 自动解析 npm 平台二进制）/ 单次调用超时毫秒（默认 `60000`）。前置：部署机 `npm install -g @wecom/cli` + 终端 `wecom-cli auth init` 扫码 |
+| `AGENTFLOW_DAILY_DOCID` / `AGENTFLOW_DAILY_SHEET_ID` / `AGENTFLOW_DAILY_SUBMITTER` | 否 | 一键工作日报（`wecom.daily` 工具）目标：智能表格 docid / 子表 ID / 提交人 userid（提交人字段对机器人身份只读，判重实际按记录创建者）。字段名默认「今日工作总结/明日工作计划/日报提交日期」，可用 `AGENTFLOW_DAILY_*_FIELD` 覆盖 |
+| `AGENTFLOW_MCP_SERVER_ENABLED` / `AGENTFLOW_MCP_SERVER_TOKEN` | 否 | 对外 MCP 服务：总开关（默认 `true`）/ Bearer 令牌（**留空仅本机可访问**，内网/公网使用必须配置）；另有 `AGENTFLOW_MCP_SERVER_BLACKLIST`（不暴露的工具名前缀）与 `AGENTFLOW_MCP_SERVER_CALL_LOG_MAX`（调用记录上限，默认 500） |
 
 ## 前端开发模式（可选）
 
@@ -238,8 +247,19 @@ java -jar target/agentflow-backend-0.0.1-SNAPSHOT.jar   # 运行 jar
 | POST | `/api/notify/channels/{name}/test` | 单通道测试推送（立即实发一条，验证地址是否有效） |
 | POST | `/api/schedule/run-now` | 立即试跑（body 可带 `{"taskId": 1}` 指定任务，不带则跑第一个；同步返回，约 1 分钟） |
 | GET | `/api/agent/scenarios` / `/api/agent/info` | 示例建议 / 服务信息 |
+| GET | `/api/wecom/status` | 企微接入状态：CLI 版本 / 授权状态 / 能力清单（按服务分组）/ 最近刷新与失败原因 |
+| POST | `/api/wecom/capabilities/refresh` / `/api/wecom/auth/check` | 重新解析 wecom-cli 帮助刷新能力清单 / 立即重查扫码授权状态 |
+| POST | `/api/mcp/server` | **对外 MCP 服务端点**（JSON-RPC：initialize / tools/list / tools/call）；鉴权 `Authorization: Bearer <令牌>`，未配令牌仅本机 |
+| GET/DELETE | `/api/mcp/expose/status` / `/api/mcp/expose/calls` | 对外服务面板：端点与令牌状态、暴露工具数、最近调用记录 / 清空记录 |
 
 SSE 事件：`status` / `phase` / `intent` / `plan` / `plan-proposal`（计划提案，等待确认）/ `plan-confirmed` / `step` / `step-state` / `tool` / `reason` / `result-delta`（流式增量）/ `result` / `done`；每个事件携带 `seq` 序号供断线续传。
+
+### 接入企微智能机器人（在企微里用 AgentFlow）
+
+1. 部署机配置令牌：`.env` 设 `AGENTFLOW_MCP_SERVER_TOKEN=<自定令牌>` 后重启（不配则端点只允许本机）；
+2. 打开 工作台 → 工具与自动化 → 对外服务，复制接入地址（`http://<部署机>:8888/api/mcp/server`）；
+3. 企微管理后台 → 智能机器人 → MCP 配置，填入地址与请求头 `Authorization: Bearer <令牌>`；
+4. 在企微里与机器人对话即可调用 AgentFlow 的只读工具（查链路、巡检、知识库检索等）；写操作会被拒绝并提示到界面执行。
 
 ### 接入告警自动值守
 
@@ -259,7 +279,7 @@ curl -X POST http://localhost:8888/api/hooks/alarm \
 ## 运行测试
 
 ```bash
-cd backend && ./mvnw test    # 253 个单测：编排引擎辅助逻辑 / 工具与动态工具 / MCP 客户端与注册 /
+cd backend && ./mvnw test    # 287 个单测：编排引擎辅助逻辑（含 @ 工具点名解析）/ 工具与动态工具 / MCP 客户端与注册 /
                             # 告警解析去重 / 通知与推送形态 / 定时任务 / 链路分析与故障报告 /
                             # 健康巡检分级 / 知识库与向量检索 / 记忆 / LLM 埋点
 ```

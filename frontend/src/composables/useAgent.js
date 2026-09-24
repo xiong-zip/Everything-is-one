@@ -241,6 +241,12 @@ export function useAgent() {
       if (done) break
       buf += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n')
       buf = consumeSseBuffer(handlers, buf, run)
+      // done 事件送达即任务完成：不等服务端关闭连接（部分环境要延迟好几秒），
+      // 主动断开释放 busy，让「编辑重发」等后续操作立刻可用
+      if (run && run.final.visible) {
+        reader.cancel().catch(() => {})
+        return
+      }
     }
     reader.releaseLock()
   }
@@ -283,6 +289,7 @@ export function useAgent() {
       const data = await res.json()
       activeTaskId = data.taskId
       run.taskId = data.taskId
+      run.dbId = data.runId || 0 // 数据库 run id，「编辑重发」删旧记录用
       await consumeWithResume(handlers, data.taskId, run)
       // confirm 模式：等待确认期间服务端可能已收断连接，确认后重连续读余下事件
       while (run.planProposal && run.planProposal.waiting && !run.stopped && !run.final.visible) {
@@ -317,6 +324,22 @@ export function useAgent() {
     setTimeout(() => {
       if (activeAbort) activeAbort.abort()
     }, 2000)
+  }
+
+  /* ---------- 编辑重发：删掉最后一轮的旧记录，用新指令原地重跑 ----------
+     仅允许操作已完成且确属最后一条的消息；库里的旧 run（含事件）一并删除，
+     这样再次打开该对话回放时看到的直接是新问答。 */
+  async function editResend(run, command) {
+    const text = String(command || '').trim()
+    if (busy.value || !text || runs.value[runs.value.length - 1] !== run) return false
+    if (run.dbId > 0) {
+      try {
+        await fetch(`${API_BASE}/history/${run.dbId}`, { method: 'DELETE' })
+      } catch { /* 删除失败不阻塞重发，只是库里多一条旧记录 */ }
+    }
+    runs.value = runs.value.filter((r) => r !== run)
+    runAgent(text)
+    return true
   }
 
   /* ---------- confirm 模式：回传确认/编辑后的计划 ---------- */
@@ -469,7 +492,7 @@ export function useAgent() {
   return {
     runs, busy, runAgent, stopRun, clearAll, confirmMode, confirmPlan,
     replayRun, history, historyLoading, loadHistory, clearHistoryAll,
-    sessionId, loadSessions, newSession, openSession, deleteSession,
+    sessionId, loadSessions, newSession, openSession, deleteSession, editResend,
     sessionHasMore, sessionLoadingMore, loadEarlier,
   }
 }

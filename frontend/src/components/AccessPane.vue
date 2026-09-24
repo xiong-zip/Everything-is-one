@@ -16,6 +16,7 @@
     <KeepAlive>
       <DbDrawer v-if="active === 'db'" embedded @active-changed="$emit('active-changed', $event)" />
       <GitlabPane v-else-if="active === 'gitlab'" />
+      <WecomPane v-else-if="active === 'wecom'" />
     </KeepAlive>
   </div>
 </template>
@@ -26,6 +27,7 @@
 import { ref, watch } from 'vue'
 import DbDrawer from './DbDrawer.vue'
 import GitlabPane from './GitlabPane.vue'
+import WecomPane from './WecomPane.vue'
 
 const props = defineProps({
   /* 外部指定的初始子视图（db/gitlab） */
@@ -37,6 +39,7 @@ defineEmits(['active-changed'])
 const tabs = [
   { key: 'db', label: '数据库连接' },
   { key: 'gitlab', label: 'GitLab 效能' },
+  { key: 'wecom', label: '企业微信' },
 ]
 const active = ref(tabs.some((t) => t.key === props.sub) ? props.sub : 'db')
 watch(() => props.sub, (v) => {
