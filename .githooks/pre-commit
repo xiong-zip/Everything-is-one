@@ -1,0 +1,59 @@
+#!/bin/sh
+# 提交前守卫：拦住「密钥」与「运行时数据」进入 git（本仓库是公开仓库）。
+# 启用（新克隆后执行一次）：git config core.hooksPath .githooks
+# 临时绕过：git commit --no-verify（只在确认内容安全时用）
+#
+# 判断原则很直白：真实密钥只写本地 .env，真实业务数据只留本地 data/ 与导出目录。
+# 这里拦的是「文件路径」和「新增行内容」两类，宁可多问一句，也不让密钥进历史。
+
+set -u
+
+staged=$(git diff --cached --name-only --diff-filter=ACM)
+[ -z "$staged" ] && exit 0
+
+problems=""
+
+# ---------- 一、路径：本地密钥文件与运行时数据 ----------
+for f in $staged; do
+    # 示例/模板文件是给人看的，放行（.env.example、xxx.example、xxx.example.json）
+    case "$f" in
+        *.example|*.example.*) continue ;;
+    esac
+
+    reason=""
+    case "$f" in
+        .env|.env.*|secrets.yml|secrets.properties|*.key|*.pem|*.p12|*.jks)
+            reason="本地密钥文件，真实值只该在本机 .env 里" ;;
+        .agents/mcp.json)
+            reason="本机 MCP 配置（内网地址各机不同），改用 .agents/mcp.json.example" ;;
+        data/*|*/data/*.db|*.db|*.db-wal|*.db-shm|*.sqlite|*.sqlite3|*.hprof|*.log)
+            reason="运行时数据（历史库/上传件/日志/崩溃转储），属本机数据" ;;
+        tools/db-architect/scripts/*.csv|tools/db-architect/scripts/out/*)
+            reason="数据库导出结果，是真实业务数据" ;;
+    esac
+    [ -n "$reason" ] && problems="${problems}  [路径] $f —— $reason\n"
+done
+
+# ---------- 二、内容：新增行里的密钥特征 ----------
+# 排除明显是占位符的串，避免误伤（sk-xxx、glpat-xxxx、<你的-key>、PLACEHOLDER…）
+added=$(git diff --cached -U0 --diff-filter=ACM \
+    | grep '^+' | grep -v '^+++' \
+    | grep -vE 'xxx|XXX|PLACEHOLDER|placeholder|<[A-Za-z_-]+>|your[-_]?key|示例|占位' \
+    | grep -nE 'sk-[A-Za-z0-9]{20,}|glpat-[A-Za-z0-9_-]{15,}|ghp_[A-Za-z0-9]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|webhook/(send|upload_media)\?key=[0-9a-f]{8}-[0-9a-f]{4}' \
+    || true)
+
+if [ -n "$added" ]; then
+    problems="${problems}  [内容] 新增行命中密钥特征：\n${added}\n"
+fi
+
+if [ -n "$problems" ]; then
+    printf '\n提交被拦下：检测到可能不该进仓库的密钥或数据。\n\n'
+    printf '%b\n' "$problems"
+    printf '处理方式：\n'
+    printf '  1. 密钥/内网地址 → 移到本地 .env（已被 .gitignore 忽略），代码里只读环境变量；\n'
+    printf '  2. 真实数据 → 移到 data/ 或工具导出目录（已忽略），或用占位符替换；\n'
+    printf '  3. 确认内容安全（如测试用的假密钥）→ git commit --no-verify 绕过。\n\n'
+    exit 1
+fi
+
+exit 0

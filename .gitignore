@@ -1,5 +1,14 @@
-# 环境变量（含 API Key，勿提交）
+# 环境变量与本地密钥（含 API Key，勿提交）
+# .env.* 一并忽略，只保留可公开的示例文件
 .env
+.env.*
+!.env.example
+secrets.yml
+secrets.properties
+*.key
+*.pem
+*.p12
+*.jks
 
 # Maven 构建产物
 backend/target/
@@ -23,18 +32,27 @@ gui-test-screenshots/
 .DS_Store
 Thumbs.db
 
-# ZCode 会话目录
+# ZCode 会话目录与本机 MCP 配置（每个开发机的内网地址不同）
 .zcode/
+.agents/mcp.json
 
-# 任务历史数据库（SQLite，运行时自动创建）
+# 运行时数据：任务历史库、知识库上传件、日志、崩溃转储
 data/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+*.log
+*.hprof
+
+# 工具产物：库表扫描/导出结果（真实业务数据，只在本地留档）
+tools/db-architect/scripts/*.csv
+tools/db-architect/scripts/out/
+tools/db-architect/scripts/*.xlsx
 
 # 单测经 StoragePaths 锚定项目根时产生的临时文件
 /target/
 
 # IDE 编译输出（IntelliJ 默认输出目录；实测已有 138MB，不忽略会被整包提交）
 out/
-
-# JVM 崩溃转储（构建/运行中断时产生，不入库）
-hs_err_pid*.log
-replay_pid*.log

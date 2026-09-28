@@ -1,0 +1,9 @@
+{
+  "_说明": "复制为 .agents/mcp.json 后填入自己的 MCP 服务地址；mcp.json 是本机配置，不进仓库",
+  "mcpServers": {
+    "signoz": {
+      "type": "http",
+      "url": "http://<signoz-host>:18000/mcp"
+    }
+  }
+}
