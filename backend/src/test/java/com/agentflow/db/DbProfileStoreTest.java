@@ -21,7 +21,7 @@ class DbProfileStoreTest {
         DbProfileStore store = new DbProfileStore(tempDir.resolve("db-" + System.nanoTime() + ".db").toString());
         store.init();
 
-        DbProfile p = new DbProfile("DM_TEST", "dameng", "192.168.2.116", 5253,
+        DbProfile p = new DbProfile("DM_TEST", "dameng", "10.0.0.11", 5253,
                 "ZOE_BASIC_SYS,OTHER", "sysdba", "secret", "ZOE_BASIC_SYS", "测试", null);
         assertTrue(store.save(p));
 
@@ -33,7 +33,7 @@ class DbProfileStoreTest {
         assertEquals("测试", found.environment());
 
         // 覆盖保存
-        assertTrue(store.save(new DbProfile("DM_TEST", "dameng", "192.168.2.116", 5254,
+        assertTrue(store.save(new DbProfile("DM_TEST", "dameng", "10.0.0.11", 5254,
                 "ZOE_BASIC_SYS", "sysdba", "secret2", null, "预发", found.createdAt())));
         assertEquals(5254, store.find("DM_TEST").port());
         assertEquals(1, store.list().size());

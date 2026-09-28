@@ -69,7 +69,7 @@ public class SigNozTraceTool implements Tool {
     @Override
     public ToolResult execute(Map<String, Object> args, String userCommand) {
         if (!client.isConfigured()) {
-            return ToolResult.note("未配置 SigNoz MCP 地址：请在 .env 设置 SIGNOZ_MCP_URL（如 http://192.168.2.111:18000/mcp）后重启服务");
+            return ToolResult.note("未配置 SigNoz MCP 地址：请在 .env 设置 SIGNOZ_MCP_URL（形如 http://<signoz-host>:18000/mcp）后重启服务");
         }
         String traceId = resolveTraceId(args, userCommand);
         if (traceId == null) {

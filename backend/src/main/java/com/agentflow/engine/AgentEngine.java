@@ -134,7 +134,7 @@ public class AgentEngine {
     private static final AtomicInteger THREAD_SEQ = new AtomicInteger();
 
     public AgentEngine(ToolRegistry toolRegistry, LlmClient llmClient, RunStore runStore, MemoryStore memoryStore,
-                       @Value("${agentflow.report.department:中台研发部}") String reportDept,
+                       @Value("${agentflow.report.department:}") String reportDept,
                        @Value("${agentflow.agent.mode:plan}") String agentMode,
                        @Value("${agentflow.memory.enabled:true}") boolean memoryEnabled,
                        @Value("${agentflow.stream-flush-chars:64}") int streamFlushChars,
@@ -151,7 +151,7 @@ public class AgentEngine {
         this.llmClient = llmClient;
         this.runStore = runStore;
         this.memoryStore = memoryStore;
-        this.reportDept = reportDept == null || reportDept.isBlank() ? "中台研发部" : reportDept.trim();
+        this.reportDept = reportDept == null ? "" : reportDept.trim();
         this.agentMode = agentMode == null ? "plan" : agentMode.trim().toLowerCase();
         this.memoryEnabled = memoryEnabled;
         this.streamFlushChars = Math.max(1, streamFlushChars);
@@ -1146,6 +1146,11 @@ public class AgentEngine {
                 : GitLabTool.window(today, today, "今天");
     }
 
+    /** 报告标题的部门前缀；未配 AGENTFLOW_DEPT 时整段省略，不留空【】 */
+    private String deptPrefix() {
+        return reportDept.isEmpty() ? "" : "【" + reportDept + "】";
+    }
+
     /** 报告生成 prompt：给出行结构示例 + 日期星期对照表 + 硬性约束，按「日期（星期）+ 当日工作主线」逐行排点 */
     private String reportWriteSystem(String kind, GitLabTool.Window w) {
         boolean weekly = "weekly".equals(kind);
@@ -1163,7 +1168,7 @@ public class AgentEngine {
             lookup.append(String.format("%02d-%02d", d.getMonthValue(), d.getDayOfMonth())).append("=").append(weekdayZh(d));
         }
         String sample = weekly
-                ? "【" + reportDept + "】个人效能周报\n"
+                ? deptPrefix() + "个人效能周报\n"
                   + "2026-09-07（周一）\n"
                   + "1. 完成数据权限功能开发（权限配置组件开发与 UI 调整）\n"
                   + "2. 调整运行态组件 UI\n"
@@ -1171,7 +1176,7 @@ public class AgentEngine {
                   + "1. 开发通用记录操作中心（通用操作记录查询组件）\n"
                   + "2. 完成数据权限联调\n"
                   + "【下周计划】\n1. 跟进数据权限合入后的联调验证"
-                : "【" + reportDept + "】个人效能日报\n"
+                : deptPrefix() + "个人效能日报\n"
                   + "2026-09-08（周二）\n"
                   + "1. 完成数据权限功能开发（权限配置组件开发与 UI 调整）\n"
                   + "2. 调整运行态组件 UI\n"
@@ -1180,7 +1185,7 @@ public class AgentEngine {
                 + "输出结构示例（示例中的日期与内容仅示意格式，必须替换为提交记录中的真实工作，禁止照抄示例文字）：\n"
                 + sample + "\n"
                 + "硬性要求：\n"
-                + "1. 第一行固定为「【" + reportDept + "】个人效能" + kindZh + "」，一字不改\n"
+                + "1. 第一行固定为「" + deptPrefix() + "个人效能" + kindZh + "」，一字不改\n"
                 + "2. 时间窗内每个有提交的日期独占一行，该行只写「日期（星期）」，如 2026-09-08（周二），星期从对照表取，日期按先后排列，日期行不写任何工作内容\n"
                 + "3. 日期行下方逐条列出当天工作：每条独占一行，以“1. ”“2. ”“3. ”编号且每天从 1 重新开始；同一天归纳为 2~5 条工作主线，可带中文圆括号补充细节，禁止逐条罗列原始提交；"
                 + "括注细节必须取自提交记录中「｜ 详情：」后的改动说明——标题只是概括，没有详情支撑的细节不要写\n"
@@ -1221,7 +1226,7 @@ public class AgentEngine {
             }
         }
         StringBuilder sb = new StringBuilder();
-        sb.append("【").append(reportDept).append("】个人效能").append(weekly ? "周报" : "日报").append("\n");
+        sb.append(deptPrefix()).append("个人效能").append(weekly ? "周报" : "日报").append("\n");
         boolean any = false;
         for (Map.Entry<LocalDate, List<String>> e : byDay.entrySet()) {
             List<String> items = dayItems(e.getValue());

@@ -173,7 +173,7 @@ docs/trace-<短traceId>-<语义标签>.md
 
 | 文件 | 说明 |
 |---|---|
-| `.agents/mcp.json` | 顶层 `mcpServers` 键，随 git 提交，团队共享 |
+| `.agents/mcp.json` | 顶层 `mcpServers` 键，**本机配置不进仓库**（各机内网地址不同）；从 `.agents/mcp.json.example` 复制后填自己的地址 |
 | `.zcode/config.json` | ZCode 主位置 `mcp.servers`；但本仓库 `.gitignore` 忽略了 `.zcode/`，仅本机生效 |
 
 配置内容：
@@ -183,7 +183,7 @@ docs/trace-<短traceId>-<语义标签>.md
   "mcpServers": {
     "signoz": {
       "type": "http",
-      "url": "http://192.168.2.111:18000/mcp"
+      "url": "http://<signoz-host>:18000/mcp"
     }
   }
 }

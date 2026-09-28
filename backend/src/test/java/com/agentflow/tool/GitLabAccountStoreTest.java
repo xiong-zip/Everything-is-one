@@ -31,10 +31,10 @@ class GitLabAccountStoreTest {
     @Test
     void authorsRoundTripViaColumn() {
         GitLabAccountStore store = newStore();
-        store.save(new GitLabAccount("XX", "tok-1", null, List.of("xiaoxiong", "2665684431@qq.com")));
+        store.save(new GitLabAccount("XX", "tok-1", null, List.of("zhangsan", "zhangsan@personal.example")));
         GitLabAccount back = store.find("XX");
-        assertEquals(List.of("xiaoxiong", "2665684431@qq.com"), back.authors());
-        assertEquals(List.of("xiaoxiong", "2665684431@qq.com"), store.list().get(0).authors());
+        assertEquals(List.of("zhangsan", "zhangsan@personal.example"), back.authors());
+        assertEquals(List.of("zhangsan", "zhangsan@personal.example"), store.list().get(0).authors());
     }
 
     /** 存进 config_json 的内容必须保持旧三字段形状，别名只能出现在独立列 */

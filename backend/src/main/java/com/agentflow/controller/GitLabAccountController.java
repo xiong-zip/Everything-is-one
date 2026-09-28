@@ -35,7 +35,7 @@ public class GitLabAccountController {
     private final String baseUrl;
 
     public GitLabAccountController(GitLabAccountStore store, ToolHttpClient toolHttpClient,
-                                   @Value("${agentflow.gitlab.base-url:http://gitlab.zoesoft.com.cn}") String baseUrl) {
+                                   @Value("${agentflow.gitlab.base-url:}") String baseUrl) {
         this.store = store;
         this.restClient = toolHttpClient.restClient();
         this.baseUrl = baseUrl.replaceAll("/+$", "");

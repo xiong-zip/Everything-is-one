@@ -54,7 +54,7 @@ Everything-is-one/
 ├── start.bat / start.sh        # 一键启动脚本（推荐）
 ├── .env.example                # 环境变量配置示例（复制为 .env 使用）
 ├── .agents/                    # Agent 扩展（随 git 提交，团队共享）
-│   ├── mcp.json                # MCP 服务配置（signoz）
+│   ├── mcp.json.example        # 本机 MCP 配置模板（复制为 mcp.json 后填自己的地址；mcp.json 不进仓库）
 │   └── skills/                 # 项目级 skill
 │       └── signoz-analyzing-traces/   # SigNoz 链路分析 + 故障案例沉淀
 ├── docs/incidents/             # 故障案例知识库（trace 分析的沉淀产物）
@@ -130,11 +130,27 @@ start.bat
 
 启动脚本会自动加载根目录的 `.env` 文件（参考 `.env.example` 复制一份）：
 
+### 密钥与数据不进仓库
+
+本仓库是**公开仓库**，所以真实密钥、内网地址、公司/团队名、业务数据一律只放本机，不进 git：
+
+- **密钥只写本地 `.env`**：`DEEPSEEK_API_KEY`、`GITLAB_TOKEN`、`KUBOARD_PASSWORD`、各类 Webhook 与 `AGENTFLOW_MCP_SERVER_TOKEN` 都只在这个文件里；`.env` 及其变体已被 `.gitignore` 忽略。仓库里只有 `.env.example` 模板（值全部留空 / 用 `<host>` 占位）。
+- **不要在源码或配置里写死真实值**：`application.yml` 与 Java 的 `@Value` 默认值里不再内置内网地址和公司名（GitLab 地址、SigNoz 地址、报告抬头部门名均改为本地配置），留空时对应工具会明确提示「未配置 …」。
+- **运行时数据不进 git**：SQLite 历史库与知识库上传件（`data/`）、日志、JVM 崩溃转储、库表扫描导出（`tools/db-architect/scripts/*.csv` 等）都已忽略；数据库导出属真实业务数据，只在本地留档。
+- **本机 MCP 配置不进 git**：`.agents/mcp.json` 每台机器的内网地址不同，复制 `.agents/mcp.json.example` 后本地使用。
+- **兜底：提交前守卫**。仓库自带 `.githooks/pre-commit`，会拦下 `data/`、`.env`、`*.db`、崩溃转储等文件，以及命中 `sk-` / `glpat-` / 企微 Webhook key 等特征的内容。新克隆后执行一次即可生效：
+
+  ```bash
+  git config core.hooksPath .githooks
+  ```
+
+> 万一真把密钥提交了：先**吊销/轮换**那把密钥，再改文件提交；仅删文件不轮换等于没处理。
+
 | 变量 | 必填 | 说明 |
 |---|---|---|
 | `DEEPSEEK_API_KEY` | 启用 LLM 必填 | DeepSeek API Key，缺失时以模拟模式运行（流程演示不受影响） |
 | `LLM_PROXY_HOST` / `LLM_PROXY_PORT` | 否 | LLM 出站代理 |
-| `GITLAB_URL` / `GITLAB_TOKEN` | 否 | 公司内部 GitLab（Personal Access Token，scope 选 `read_api`；写操作需 `api`） |
+| `GITLAB_URL` / `GITLAB_TOKEN` | 启用 GitLab 工具必填 | 自建 GitLab 地址与 Personal Access Token（scope 选 `read_api`；写操作需 `api`）。地址无内置默认值，留空时工具会提示未配置 |
 | `AGENTFLOW_AGENT_MODE` | 否 | `plan`（默认，先规划再执行）/ `react`（自主循环逐步决策）/ `hybrid`（计划受阻自动转 ReAct，需 LLM） |
 | `AGENTFLOW_MEMORY` | 否 | 长期记忆总开关（默认 `true`；关闭后不注入 prompt、不自动提取） |
 | `AGENTFLOW_KB_MAX_FILE_MB` | 否 | 知识库单文件上传上限（默认 `20` MB） |
@@ -149,9 +165,9 @@ start.bat
 | `AGENTFLOW_DB` | 否 | SQLite 数据库路径（默认 `./data/agentflow.db`，相对路径自动锚定到项目根） |
 | `AGENTFLOW_RETENTION_DAYS` | 否 | 历史保留天数，超期记录启动时清理（默认 30，0 = 不清理） |
 | `AGENTFLOW_MAX_RUNS` | 否 | 历史条数上限（默认 1000，0 = 不限制） |
-| `AGENTFLOW_DEPT` | 否 | 报告抬头部门名（默认 `中台研发部`） |
+| `AGENTFLOW_DEPT` | 否 | 报告抬头部门名（无内置默认值，留空则不抬头） |
 | `AGENTFLOW_CORRELATE_WINDOW_HOURS` | 否 | 变更关联（gitlab.changes）默认回溯故障前的小时数（默认 `48`，上限 168） |
-| `SIGNOZ_MCP_URL` | 否 | SigNoz MCP 地址，用于链路分析工具（默认 `http://192.168.2.111:18000/mcp`，需内网可达） |
+| `SIGNOZ_MCP_URL` | 否 | SigNoz MCP 地址，用于链路分析工具（无内置默认值，需内网可达；留空时工具提示未配置） |
 | `KUBOARD_URL` / `KUBOARD_USERNAME` / `KUBOARD_PASSWORD` | 否 | Kuboard 面板地址与账号，启用 `k8s.query` 运维排查工具（经其代理只读访问集群） |
 | `KUBOARD_CLUSTER` | 否 | 默认操作的集群名（Kuboard 导入时的名称，默认 `dev`；完整列表可用 `k8s.query` 的 `clusters` 查询） |
 | `SIGNOZ_TIME_RANGE` / `SIGNOZ_FALLBACK_RANGE` / `SIGNOZ_LOG_LIMIT` | 否 | 链路查询时间窗、查不到时的降级窗口、补查日志条数（默认 `24h` / `7d` / `10`；两天前的链路只有 `7d` 才查得到） |

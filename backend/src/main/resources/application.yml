@@ -62,7 +62,8 @@ agentflow:
       host: ${LLM_PROXY_HOST:}
       port: ${LLM_PROXY_PORT:0}
   gitlab:
-    base-url: ${GITLAB_URL:http://gitlab.zoesoft.com.cn}
+    # 自建 GitLab 地址是内网信息，不写进仓库；本地 .env 里配 GITLAB_URL，留空时 GitLab 工具提示未配置
+    base-url: ${GITLAB_URL:}
     token: ${GITLAB_TOKEN:}
   storage:
     # 任务历史数据库文件路径（SQLite），目录不存在会自动创建
@@ -72,8 +73,8 @@ agentflow:
     # 历史条数上限：只保留最新的 N 条（0 = 不限制）
     max-runs: ${AGENTFLOW_MAX_RUNS:1000}
   report:
-    # GitLab 工作报告抬头中的部门名
-    department: ${AGENTFLOW_DEPT:中台研发部}
+    # GitLab 工作报告抬头中的部门名（公司组织信息，放本地 .env 的 AGENTFLOW_DEPT；留空则不抬头）
+    department: ${AGENTFLOW_DEPT:}
   notify:
     # 通用 Webhook（企微/钉钉机器人），晨报/告警生成后推送；留空则只落库不推送
     webhook: ${AGENTFLOW_NOTIFY_WEBHOOK:}
@@ -86,7 +87,8 @@ agentflow:
     scripts-path: ${AGENTFLOW_DB_SCRIPTS:./tools/db-architect/scripts}
   signoz:
     # SigNoz 链路分析（内置 signoz.trace / signoz.case 工具）：MCP 服务地址，留空则工具提示未配置
-    mcp-url: ${SIGNOZ_MCP_URL:http://192.168.2.111:18000/mcp}
+    # 具体地址属内网信息，不写进仓库，放本地 .env（SIGNOZ_MCP_URL）
+    mcp-url: ${SIGNOZ_MCP_URL:}
     # 链路查询默认时间窗；查不到时自动退到 fallback-range（两天前的链路只有 7d 才查得到）
     time-range: ${SIGNOZ_TIME_RANGE:24h}
     fallback-range: ${SIGNOZ_FALLBACK_RANGE:7d}

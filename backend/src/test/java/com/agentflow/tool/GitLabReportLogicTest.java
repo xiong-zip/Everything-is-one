@@ -77,11 +77,11 @@ class GitLabReportLogicTest {
     /** 实测翻车场景：档案=姓名+公司邮箱，git=账号名+个人邮箱，档案身份一条都匹配不上 */
     @Test
     void aliasRescuesMismatchedGitIdentity() throws Exception {
-        GitLabTool.AuthorIdentity id = GitLabTool.AuthorIdentity.of("肖雄",
-                Set.of("xiaoxiong@zoesoft.com.cn"), List.of("xiaoxiong", "2665684431@qq.com"));
-        assertTrue(id.matches(commit("肖雄", "xiaoxiong@zoesoft.com.cn")));
-        assertTrue(id.matches(commit("xiaoxiong", "2665684431@qq.com")), "别名（作者名或邮箱）必须能认回真实提交");
-        assertFalse(id.matches(commit("同事", "mate@zoesoft.com.cn")));
+        GitLabTool.AuthorIdentity id = GitLabTool.AuthorIdentity.of("张三",
+                Set.of("zhangsan@example.com"), List.of("zhangsan", "zhangsan@personal.example"));
+        assertTrue(id.matches(commit("张三", "zhangsan@example.com")));
+        assertTrue(id.matches(commit("zhangsan", "zhangsan@personal.example")), "别名（作者名或邮箱）必须能认回真实提交");
+        assertFalse(id.matches(commit("同事", "mate@example.com")));
     }
 
     @Test

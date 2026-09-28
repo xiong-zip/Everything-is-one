@@ -43,7 +43,7 @@ public class GitLabTool implements Tool {
 
     public GitLabTool(ToolHttpClient toolHttpClient,
                       GitLabAccountStore accountStore,
-                      @Value("${agentflow.gitlab.base-url:http://gitlab.zoesoft.com.cn}") String baseUrl,
+                      @Value("${agentflow.gitlab.base-url:}") String baseUrl,
                       @Value("${agentflow.gitlab.token:${GITLAB_TOKEN:}}") String token) {
         this.restClient = toolHttpClient.restClient();
         this.accountStore = accountStore;
@@ -82,6 +82,9 @@ public class GitLabTool implements Tool {
 
     @Override
     public ToolResult execute(Map<String, Object> args, String userCommand) {
+        if (baseUrl.isEmpty()) {
+            return ToolResult.note("未配置 GitLab 地址：请在 .env 设置 GITLAB_URL 后重启服务");
+        }
         if (currentToken().isEmpty()) {
             return ToolResult.note("未配置 GitLab Access Token（右上角「工作台 → GitLab 账户」添加，或在 .env 配置 GITLAB_TOKEN 后重启）");
         }

@@ -207,7 +207,7 @@ class NotifyServiceTest {
 
     @Test
     void defaultFileNameIsSafe() {
-        String name = NotifyService.defaultFileName("【AgentFlow 晨报】中台研发部/日报");
+        String name = NotifyService.defaultFileName("【AgentFlow 晨报】研发部/日报");
 
         // 文件名不能带路径分隔符等非法字符
         assertFalse(name.contains("/"));
