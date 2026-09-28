@@ -13,6 +13,11 @@ if errorlevel 1 (
   exit /b 1
 )
 
+rem Switch console to UTF-8 before reading .env. The file is UTF-8, and under the default
+rem GBK code page cmd mangles non-ASCII values (e.g. AGENTFLOW_DEPT=中台研发部 arrives in the
+rem JVM as mojibake). With 65001 the JVM reads them intact.
+chcp 65001 >nul
+
 rem Load optional .env from project root (DEEPSEEK_API_KEY etc.)
 if exist ".env" (
   echo [INFO] Loaded .env

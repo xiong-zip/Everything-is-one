@@ -144,6 +144,8 @@ start.bat
   git config core.hooksPath .githooks
   ```
 
+- **`.env` 里可以放中文**（如 `AGENTFLOW_DEPT`）：`start.bat` 会先 `chcp 65001` 再读配置，中文值能原样传到 JVM；`start.sh` 与 IDE 启动同样不受影响。直接手敲 `set` 的临时验证方式在 cmd 默认 GBK 代码页下会乱码，属正常现象。
+
 > 万一真把密钥提交了：先**吊销/轮换**那把密钥，再改文件提交；仅删文件不轮换等于没处理。
 
 | 变量 | 必填 | 说明 |
