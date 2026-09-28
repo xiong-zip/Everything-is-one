@@ -155,11 +155,13 @@ agentflow:
     timeout-ms: ${AGENTFLOW_WECOM_TIMEOUT_MS:60000}
     # 单次 CLI 输出截断上限（字符）
     max-output-chars: ${AGENTFLOW_WECOM_MAX_OUTPUT_CHARS:60000}
-    # 一键工作日报（内置 wecom.daily 工具）：目标智能表格与提交人写死在配置里，写入幂等（同日同提交人更新而非新增）
+    # 一键工作日报（内置 wecom.daily 工具）：目标智能表格与提交人写死在配置里，写入幂等（同日更新而非新增）
+    # 提交人：优先 submitter-userid；未配则按 submitter-name 从表格历史记录反查 userid，写入后回读确认归入本人分组
     daily:
       docid: ${AGENTFLOW_DAILY_DOCID:}
       sheet-id: ${AGENTFLOW_DAILY_SHEET_ID:}
       submitter-userid: ${AGENTFLOW_DAILY_SUBMITTER:}
+      submitter-name: ${AGENTFLOW_DAILY_SUBMITTER_NAME:}
       summary-field: ${AGENTFLOW_DAILY_SUMMARY_FIELD:今日工作总结}
       plan-field: ${AGENTFLOW_DAILY_PLAN_FIELD:明日工作计划}
       date-field: ${AGENTFLOW_DAILY_DATE_FIELD:日报提交日期}

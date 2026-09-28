@@ -153,6 +153,21 @@ class WecomSupportTest {
     }
 
     @Test
+    void dailySheetSummaryStripsDetailSegments() {
+        List<String> lines = List.of(
+                "【agentflow-backend】2 个提交",
+                "14:22 · 修复登录日志不落库问题（定时任务场景） ｜ 详情：身份上下文为空导致 NPE",
+                "09-24 16:05 · feat(wecom): 补写提交人字段");
+        // 表格版只留「编号 + 一句话主干」：剥详情尾缀与括号细节
+        assertEquals("1. 修复登录日志不落库问题\n2. feat: 补写提交人字段",
+                WecomDailyTool.buildSheetSummary(lines));
+        // 完整版保留细节，留给对话汇报
+        String full = WecomDailyTool.buildSummary(lines);
+        assertTrue(full.contains("详情：身份上下文为空导致 NPE"));
+        assertTrue(full.contains("feat(wecom): 补写提交人字段"));
+    }
+
+    @Test
     void dailyMatchesRecordByDateAndCreator() throws Exception {
         String human = """
                 {"record_id":"r1","creator_name":"蔡锦诚","values":{"日报提交日期":"2026-09-24 00:00:00",
@@ -162,12 +177,60 @@ class WecomSupportTest {
         com.fasterxml.jackson.databind.ObjectMapper m = new com.fasterxml.jackson.databind.ObjectMapper();
         JsonNode h = m.readTree(human);
         JsonNode b = m.readTree(bot);
-        // 机器人创建的行：日期命中即为目标（自己的行，提交人字段对机器人只读）
+        // 机器人创建的行：日期命中即为目标（自己的行，补写提交人后 userId 分支同样命中）
         assertTrue(WecomDailyTool.matchesTarget(b, "2026-09-24", "", "日报提交日期", "提交人"));
         assertFalse(WecomDailyTool.matchesTarget(b, "2026-09-23", "", "日报提交日期", "提交人"));
         // 人类同事同一天的行：不能命中（哪怕未配置提交人，机器人只管自己的记录）
         assertFalse(WecomDailyTool.matchesTarget(h, "2026-09-24", "", "日报提交日期", "提交人"));
         assertFalse(WecomDailyTool.matchesTarget(h, "2026-09-24", "u9", "日报提交日期", "提交人"));
+    }
+
+    @Test
+    void dailyFindTargetRecordAndLookup() throws Exception {
+        String sheet = """
+                {"records":[
+                  {"record_id":"r1","creator_name":"蔡锦诚","values":{"日报提交日期":"2026-09-24 00:00:00",
+                   "提交人":[{"userId":"u1","userName":"蔡锦诚"}]}},
+                  {"record_id":"r2","creator_name":"肖雄的机器人","values":{"日报提交日期":"2026-09-24 00:00:00",
+                   "提交人":[{"userId":"u2","userName":"肖雄"}]}},
+                  {"record_id":"r3","creator_name":"李四的机器人","values":{"日报提交日期":"2026-09-23 00:00:00"}}
+                ]}""";
+        JsonNode records = new com.fasterxml.jackson.databind.ObjectMapper().readTree(sheet).path("records");
+        // 判重：同日机器人行（含已补写过提交人的）命中
+        assertEquals("r2", WecomDailyTool.findTargetRecord(records, "2026-09-24", "u2", "日报提交日期", "提交人"));
+        assertEquals("r3", WecomDailyTool.findTargetRecord(records, "2026-09-23", "", "日报提交日期", "提交人"));
+        assertNull(WecomDailyTool.findTargetRecord(records, "2026-09-22", "", "日报提交日期", "提交人"));
+        assertNull(WecomDailyTool.findTargetRecord(null, "2026-09-24", "", "日报提交日期", "提交人"));
+        // 按姓名反查 userid：取提交人.userName 命中记录的 userId
+        assertEquals("u2", WecomDailyTool.lookupUserIdByName(records, "肖雄", "提交人"));
+        assertEquals("u1", WecomDailyTool.lookupUserIdByName(records, "蔡锦诚", "提交人"));
+        assertNull(WecomDailyTool.lookupUserIdByName(records, "王五", "提交人")); // 无历史记录的新成员
+        assertNull(WecomDailyTool.lookupUserIdByName(records, "", "提交人"));
+        // 回读验证：按 record_id 找记录并取提交人姓名
+        assertEquals("肖雄", WecomDailyTool.recordSubmitterName(
+                WecomDailyTool.findRecordById(records, "r2"), "提交人"));
+        assertEquals("", WecomDailyTool.recordSubmitterName(
+                WecomDailyTool.findRecordById(records, "r3"), "提交人"));
+        assertEquals("", WecomDailyTool.recordSubmitterName(null, "提交人"));
+    }
+
+    @Test
+    void dailyBusinessOutcomeJudgement() {
+        // errcode 判定：CLI 退出码 0 ≠ 业务成功
+        assertNull(WecomDailyTool.errFail(Map.of("errcode", 0, "errmsg", "ok")));
+        assertEquals("errcode 40077：invalid",
+                WecomDailyTool.errFail(Map.of("errcode", 40077, "errmsg", "invalid")));
+        assertNotNull(WecomDailyTool.errFail(null));
+        // update 目标已被删：CLI 提示已忽略，应回落走新增
+        assertTrue(WecomDailyTool.ignoredRecordIds(
+                Map.of("errcode", 0, "errmsg", "已忽略 1 个不存在的 record_id")));
+        assertFalse(WecomDailyTool.ignoredRecordIds(Map.of("errcode", 0, "errmsg", "ok")));
+        assertFalse(WecomDailyTool.ignoredRecordIds(null));
+        // add 响应里取 record_id（补写提交人依赖它）
+        assertEquals("rec9", WecomDailyTool.extractRecordId(
+                Map.of("errcode", 0, "records", List.of(Map.of("record_id", "rec9")))));
+        assertNull(WecomDailyTool.extractRecordId(Map.of("errcode", 0)));
+        assertNull(WecomDailyTool.extractRecordId(null));
     }
 
     /* ---------- Windows 参数预转义 ---------- */
