@@ -124,7 +124,7 @@ class WecomSupportTest {
         assertTrue(WecomToolSupport.isPlaceholderValue("上一步定位到的文档"));
         assertTrue(WecomToolSupport.isPlaceholderValue(""));
         assertTrue(WecomToolSupport.isPlaceholderValue(null));
-        assertFalse(WecomToolSupport.isPlaceholderValue("w3_AFsALXg6AP8CNDBEtlxbLRh6X6DaT_a"));
+        assertFalse(WecomToolSupport.isPlaceholderValue("w3_PLACEHOLDERDOCID0000000000"));
         assertFalse(WecomToolSupport.isPlaceholderValue("https://doc.weixin.qq.com/doc/w3_xxx"));
     }
 
@@ -263,11 +263,12 @@ class WecomSupportTest {
 
     @Test
     void extractDocidFromCommandText() {
-        assertEquals("s3_ASYAKwYsAF0CNcFyzqMudSrefo145",
-                WecomCallTool.extractDocid("查询智能表格 docid=s3_ASYAKwYsAF0CNcFyzqMudSrefo145 的结构"));
-        assertEquals("w3_AFsALXg6AP8CNDBEtlxbLRh6X6DaT_a",
-                WecomCallTool.extractDocid("读取 https://doc.weixin.qq.com/doc/w3_AFsALXg6AP8CNDBEtlxbLRh6X6DaT_a?scode=x 全文"));
-        assertNull(WecomCallTool.extractDocid("查询底座研发组日报"));
+        // 用编造的 docid：真实文档 ID 不进仓库（公开仓库可见，等于把内部表格位置交出去）
+        assertEquals("s3_PLACEHOLDERDOCID0000000000",
+                WecomCallTool.extractDocid("查询智能表格 docid=s3_PLACEHOLDERDOCID0000000000 的结构"));
+        assertEquals("w3_PLACEHOLDERDOCID0000000000",
+                WecomCallTool.extractDocid("读取 https://doc.weixin.qq.com/doc/w3_PLACEHOLDERDOCID0000000000?scode=x 全文"));
+        assertNull(WecomCallTool.extractDocid("查询今天的团队日报"));
         assertNull(WecomCallTool.extractDocid(null));
     }
 
